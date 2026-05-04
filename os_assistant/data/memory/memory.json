@@ -1,0 +1,14 @@
+{
+  "long_term": [],
+  "error_memory": [
+    {
+      "action": {
+        "action": "test"
+      },
+      "error": "err0",
+      "context": "",
+      "timestamp": "2026-05-02T09:00:19.024550",
+      "occurrences": 1
+    }
+  ]
+}

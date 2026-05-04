@@ -1,0 +1,20 @@
+# OS Assistant - Native Desktop App Dependencies
+PyQt6==6.9.0
+pyautogui==0.9.54
+pydirectinput
+pyperclip==1.9.0
+Pillow==11.2.1
+mss==9.0.2
+openai==1.78.1
+anthropic==0.52.0
+google-generativeai==0.8.5
+python-dotenv==1.1.0
+psutil==7.0.0
+requests==2.32.3
+chromadb==1.0.7
+uiautomation==2.0.21
+# Hardware / AI extras
+faster-whisper
+openwakeword
+pyaudio
+pyttsx3
