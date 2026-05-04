@@ -60,6 +60,11 @@ class AgentCore:
         # Confirmation state — guarded by an Event instead of busy-polling
         self._confirm_event = threading.Event()
         self._confirmation_response = None  # "approve" | "deny" | None
+        
+        # ── 100x Architecture State Synchronization Mutexes ──
+        self.action_lock = threading.RLock()  # Prevents multiple threads from controlling mouse/keyboard
+        self.llm_lock = threading.RLock()     # Prevents LLM API rate limit clashes
+        
         self._lock = threading.Lock()
 
         # Current screen info for coordinate scaling
@@ -195,12 +200,13 @@ class AgentCore:
                     if lesson_hints:
                         context += f"\n[LEARNED LESSONS - NEVER REPEAT THESE MISTAKES]\n{lesson_hints}"
 
-                    ai_result = self.vision.analyze_screen(
-                        screenshot_b64=screenshot["base64"],
-                        user_task=current_task,
-                        context=context,
-                        conversation_history=self._conversation_history,
-                    )
+                    with self.llm_lock:
+                        ai_result = self.vision.analyze_screen(
+                            screenshot_b64=screenshot["base64"],
+                            user_task=current_task,
+                            context=context,
+                            conversation_history=self._conversation_history,
+                        )
 
                     thought = ai_result["thought"]
                     action = ai_result["action"]
@@ -552,8 +558,9 @@ class AgentCore:
         action_type = action.get("action", "")
 
         try:
-            match action_type:
-                case "uia_click":
+            with self.action_lock:
+                match action_type:
+                    case "uia_click":
                     return self.uia.click_element_by_name(action.get("name", ""))
                 case "uia_type":
                     return self.uia.type_element_by_name(action.get("name", ""), action.get("text", ""))

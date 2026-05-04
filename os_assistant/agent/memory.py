@@ -79,7 +79,32 @@ class Memory:
         if not self.m0: return
         import json
         
-        prompt = f"System Workflow Learned: '{name}'. Steps: {json.dumps(steps[:5])}... Tags: {tags}"
+        # ── 100x De-fragmentation Filter ──
+        semantic_steps = []
+        for s in steps:
+            action_type = s.get("action", "")
+            # Skip fragile coordinate-based actions that pollute vector memory
+            if action_type in ["click", "double_click", "right_click", "drag", "scroll", "wait"]:
+                continue
+                
+            # Extract meaningful high-level semantic actions
+            if action_type in ["uia_click", "uia_type"]:
+                semantic_steps.append(f"{action_type} on '{s.get('name', '')}'")
+            elif action_type in ["type_text", "type_unicode"]:
+                semantic_steps.append(f"Typed '{s.get('text', '')}'")
+            elif action_type in ["hotkey", "press_key", "key_down", "key_up"]:
+                semantic_steps.append(f"Pressed {s.get('keys') or s.get('key')}")
+            elif action_type == "run_powershell":
+                semantic_steps.append("Ran PowerShell script")
+            elif action_type in ["create_skill", "execute_skill"]:
+                semantic_steps.append(f"{action_type}: '{s.get('name', '')}'")
+            elif action_type in ["open_application", "open_url", "search_start"]:
+                semantic_steps.append(f"{action_type}: {s.get('target') or s.get('url') or s.get('query')}")
+
+        if not semantic_steps:
+            return  # If the workflow was just raw clicks, it's useless to memorize!
+            
+        prompt = f"System Workflow Learned: '{name}'. High-level steps taken: {', '.join(semantic_steps)}. Tags: {tags}"
         try:
             threading.Thread(target=self.m0.add, args=(prompt,), kwargs={"user_id": "os_agent"}).start()
         except Exception as e:
@@ -99,7 +124,14 @@ class Memory:
     def log_error(self, action: dict, error: str, context: str = ""):
         if not self.m0: return
         import json
-        prompt = f"System Error encountered: When performing action {json.dumps(action)}, error occurred: {error}. Context: {context}"
+        
+        action_type = action.get("action", "")
+        # Skip logging errors for raw coordinates (they fail often due to screen shifts and mean nothing long-term)
+        if action_type in ["click", "double_click", "drag", "scroll"]:
+            return
+            
+        target = action.get("name") or action.get("text") or str(action.get("script", ""))[:50]
+        prompt = f"System Error encountered: When trying to do '{action_type}' on '{target}', error occurred: {error}. Context: {context}"
         try:
             threading.Thread(target=self.m0.add, args=(prompt,), kwargs={"user_id": "os_agent"}).start()
         except Exception:

@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
     QLabel, QPushButton, QTextEdit, QScrollArea, QFrame, QSplitter,
     QSlider, QSystemTrayIcon, QMenu, QDialog, QDialogButtonBox,
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QSize
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QSize, QThread
 from PyQt6.QtGui import QPixmap, QImage, QIcon, QKeySequence, QShortcut, QFont
 
 # Add project root to path
@@ -33,6 +33,41 @@ class SignalBridge(QObject):
     confirm_needed = pyqtSignal(str)          # message
     task_done = pyqtSignal(str)               # summary
     wake_word_detected = pyqtSignal()         # triggers STT
+
+# ── QThread Workers (Prevents GIL UI Starvation) ─────────────
+class AgentTaskWorker(QThread):
+    def __init__(self, agent, task, live_mode, signals):
+        super().__init__()
+        self.agent = agent
+        self.task = task
+        self.live_mode = live_mode
+        self.signals = signals
+
+    def run(self):
+        result = self.agent.execute_task(self.task, live_mode=self.live_mode)
+        summary = result.get("summary", "Task completed")
+        self.signals.task_done.emit(summary)
+
+class ListenWorker(QThread):
+    def __init__(self, agent, signals, app_ref):
+        super().__init__()
+        self.agent = agent
+        self.signals = signals
+        self.app_ref = app_ref
+
+    def run(self):
+        res = self.agent.hardware.listen(duration=5.0, offline=True)
+        if res.get("success") and res.get("text"):
+            task = res["text"]
+            self.signals.new_message.emit("user", f"Heard: {task}", 0)
+            # Use QTimer to delay the send task back on the main thread
+            QTimer.singleShot(500, lambda: self.app_ref._send_task(task))
+        else:
+            self.signals.status_changed.emit("Ready", "Awaiting command")
+            if res.get("error"):
+                self.signals.new_message.emit("error", res["error"], 0)
+            else:
+                self.signals.new_message.emit("thought", "No speech detected.", 0)
 
 
 # ── Confirmation Dialog ─────────────────────────────────────
@@ -687,15 +722,9 @@ class MainWindow(QMainWindow):
         self.ctrl_widget.show()
         self._set_status("Working", f"Executing: {task[:40]}...")
 
-        # Run agent in background thread
-        def run():
-            live = self.btn_live_mode.isChecked()
-            result = self.agent.execute_task(task, live_mode=live)
-            summary = result.get("summary", "Task completed")
-            self.signals.task_done.emit(summary)
-
-        t = threading.Thread(target=run, daemon=True)
-        t.start()
+        # Run agent in background QThread to bypass GIL UI freezing
+        self._task_thread = AgentTaskWorker(self.agent, task, live, self.signals)
+        self._task_thread.start()
 
     def _on_wake_word(self):
         """Called when 'Hey Assistant' is detected."""
@@ -707,22 +736,9 @@ class MainWindow(QMainWindow):
             
         self._add_message("thought", "🎙️ Listening for command...", 0)
         
-        # Start listening in background thread
-        def listen_and_execute():
-            res = self.agent.hardware.listen(duration=5.0, offline=True)
-            if res.get("success") and res.get("text"):
-                task = res["text"]
-                self.signals.new_message.emit("user", f"Heard: {task}", 0)
-                QTimer.singleShot(500, lambda: self._send_task(task))
-            else:
-                self.signals.status_changed.emit("Ready", "Awaiting command")
-                if res.get("error"):
-                    self.signals.new_message.emit("error", res["error"], 0)
-                else:
-                    self.signals.new_message.emit("thought", "No speech detected.", 0)
-                    
-        t = threading.Thread(target=listen_and_execute, daemon=True)
-        t.start()
+        # Start listening in background QThread
+        self._listen_thread = ListenWorker(self.agent, self.signals, self)
+        self._listen_thread.start()
 
     # ── Agent Event Callback (from agent thread) ────────────
     def _agent_event(self, event, data):

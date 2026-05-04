@@ -131,7 +131,9 @@ class ProactiveMonitor:
                     "Analyze this briefly and suggest a very short 1-sentence fix. "
                     "Format: 'Alert: [problem]. Fix: [solution]'"
                 )
-                analysis = self.agent.vision.analyze_text_only(prompt)
+                
+                with self.agent.llm_lock:
+                    analysis = self.agent.vision.analyze_text_only(prompt)
                 
                 # Emit to UI
                 self.agent._emit("info", {"message": f"🛡️ Proactive Alert: {analysis}"})
