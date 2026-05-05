@@ -4,6 +4,7 @@ from datetime import datetime
 import logging
 import json
 from config import Config
+from agent.memory_store import LocalMemoryStore
 
 logger = logging.getLogger(__name__)
 
@@ -13,7 +14,8 @@ class Memory:
     def __init__(self):
         Config.ensure_dirs()
         self._short_term = []
-        self._local_notes_path = os.path.join(Config.MEMORY_DIR, "assistant_memory.json")
+        self._local_notes_path = os.path.join(Config.MEMORY_DIR, "assistant_memory_v2.json")
+        self.local = LocalMemoryStore(self._local_notes_path, max_records=Config.MAX_LONG_TERM_ITEMS * 5)
         self._lock = threading.Lock()
         
         # Initialize Mem0
@@ -65,11 +67,18 @@ class Memory:
     def get_recent_steps(self, n: int = 5) -> list:
         return self._short_term[-n:]
 
-    def get_context_string(self) -> str:
+    def get_context_string(self, query: str = "", metadata: dict | None = None) -> str:
         parts = []
-        notes = self.recall("")
+        notes = self.recall(query, limit=6, metadata=metadata or {}) if query else []
         if notes:
-            parts.append("[RELEVANT MEMORY]\n" + "\n".join(f"- {n['text']}" for n in notes[:3]))
+            grouped: dict[str, list[str]] = {}
+            for item in notes:
+                grouped.setdefault(item.get("kind", "note"), []).append(item["text"])
+            blocks = []
+            for kind, values in grouped.items():
+                label = kind.replace("_", " ").upper()
+                blocks.append(f"[{label}]\n" + "\n".join(f"- {v}" for v in values[:3]))
+            parts.append("\n".join(blocks))
         if not self._short_term:
             return "\n".join(parts)
         lines = []
@@ -87,8 +96,6 @@ class Memory:
     # ── Mem0 Long-Term Memory (Workflows, Preferences, Errors) ──
     
     def save_workflow(self, name: str, steps: list, tags: list[str] | None = None):
-        if not self.m0: return
-        import json
         
         # ── 100x De-fragmentation Filter ──
         semantic_steps = []
@@ -116,12 +123,24 @@ class Memory:
             return  # If the workflow was just raw clicks, it's useless to memorize!
             
         prompt = f"System Workflow Learned: '{name}'. High-level steps taken: {', '.join(semantic_steps)}. Tags: {tags}"
+        self.remember(
+            prompt,
+            kind="workflow_summary",
+            tags=(tags or []) + ["workflow"],
+            metadata={"task": name, "action": "workflow"},
+            confidence=1.15,
+        )
+        if not self.m0:
+            return
         try:
             self._run_mem0_async("save_workflow", self.m0.add, prompt, user_id="os_agent")
         except Exception as e:
             logger.error(f"Mem0 save_workflow failed: {e}")
 
     def find_workflow(self, query: str) -> dict | None:
+        local = self.recall(query, limit=1, kinds=["workflow_summary"])
+        if local:
+            return {"name": "Local Recall", "content": local[0].get("text", "")}
         if not self.m0: return None
         try:
             results = self.m0.search(f"Workflow for: {query}", user_id="os_agent")
@@ -134,45 +153,32 @@ class Memory:
 
     # Local durable memory fallback. This stores compact facts/preferences only,
     # not workflow replay logs or run history.
-    def remember(self, text: str, kind: str = "note", tags: list[str] | None = None) -> dict:
-        text = (text or "").strip()
-        if not text:
-            return {"success": False, "error": "Empty memory text"}
-        db = self._load_local_notes()
-        item = {
-            "id": f"mem_{datetime.now().strftime('%Y%m%d%H%M%S%f')}",
-            "kind": kind,
-            "text": text[:1000],
-            "tags": tags or [],
-            "created_at": datetime.now().isoformat(),
-        }
-        db.append(item)
-        db = db[-Config.MAX_LONG_TERM_ITEMS:]
-        self._save_local_notes(db)
-        return {"success": True, "memory": item}
+    def remember(
+        self,
+        text: str,
+        kind: str = "note",
+        tags: list[str] | None = None,
+        metadata: dict | None = None,
+        confidence: float = 1.0,
+    ) -> dict:
+        return self.local.remember(text, kind=kind, tags=tags, metadata=metadata, confidence=confidence)
 
-    def recall(self, query: str, limit: int = 5) -> list[dict]:
-        db = self._load_local_notes()
-        query_words = [w for w in (query or "").lower().split() if len(w) > 2]
-        if not query_words:
-            return db[-limit:]
-        scored = []
-        for item in db:
-            haystack = " ".join([
-                item.get("text", ""),
-                item.get("kind", ""),
-                " ".join(item.get("tags", [])),
-            ]).lower()
-            score = sum(1 for word in query_words if word in haystack)
-            if score:
-                scored.append((score, item))
-        scored.sort(key=lambda x: x[0], reverse=True)
-        return [item for _, item in scored[:limit]]
+    def recall(
+        self,
+        query: str,
+        limit: int = 5,
+        kinds: list[str] | None = None,
+        metadata: dict | None = None,
+    ) -> list[dict]:
+        return self.local.recall(query, limit=limit, kinds=kinds, metadata=metadata)
+
+    def mark_helped(self, memory_id: str) -> dict:
+        return self.local.mark_helped(memory_id)
+
+    def mark_failed(self, memory_id: str) -> dict:
+        return self.local.mark_failed(memory_id)
 
     def log_error(self, action: dict, error: str, context: str = ""):
-        if not self.m0: return
-        import json
-        
         action_type = action.get("action", "")
         # Skip logging errors for raw coordinates (they fail often due to screen shifts and mean nothing long-term)
         if action_type in ["click", "double_click", "drag", "scroll"]:
@@ -180,25 +186,39 @@ class Memory:
             
         target = action.get("name") or action.get("text") or str(action.get("script", ""))[:50]
         prompt = f"System Error encountered: When trying to do '{action_type}' on '{target}', error occurred: {error}. Context: {context}"
+        self.remember(
+            prompt,
+            kind="error_lesson",
+            tags=["error", action_type],
+            metadata={"action": action_type},
+            confidence=0.95,
+        )
+        if not self.m0:
+            return
         try:
             self._run_mem0_async("log_error", self.m0.add, prompt, user_id="os_agent")
         except Exception as e:
             logger.error(f"Mem0 log_error failed: {e}")
 
     def get_error_warnings(self, action_type: str) -> list:
-        if not self.m0: return []
+        local = [{"error": item["text"], "memory_id": item["id"]} for item in self.recall(
+            f"errors related to action {action_type}",
+            kinds=["error_lesson"],
+            metadata={"action": action_type},
+        )]
+        if not self.m0: return local
         try:
             results = self.m0.search(f"Errors related to action: {action_type}", user_id="os_agent")
-            return [{"error": self._memory_text(r)} for r in self._iter_memories(results)]
+            return local + [{"error": self._memory_text(r)} for r in self._iter_memories(results)]
         except Exception as e:
             logger.error(f"Mem0 get_error_warnings failed: {e}")
-            return []
+            return local
 
     # ── User Personalization (Mem0 specific) ──
     
     def learn_user_preference(self, text: str):
         """Learn things like 'User prefers dark mode' or 'Don't open Chrome'."""
-        self.remember(text, kind="preference", tags=["user"])
+        self.remember(text, kind="preference", tags=["user"], confidence=1.2)
         if not self.m0: return
         try:
             self._run_mem0_async("learn_user_preference", self.m0.add, text, user_id="user")
@@ -207,7 +227,7 @@ class Memory:
             
     def get_user_preferences(self, query: str) -> str:
         """Ask Mem0 for relevant user preferences for a task."""
-        local = "\n".join(item["text"] for item in self.recall(query, limit=5) if item.get("kind") == "preference")
+        local = "\n".join(item["text"] for item in self.recall(query, limit=5, kinds=["preference"]))
         if not self.m0: return local
         try:
             results = self.m0.search(query, user_id="user")
@@ -225,7 +245,7 @@ class Memory:
             "short_term_count": len(self._short_term),
             "mem0_active": self.m0 is not None,
             "mem0_error": self._mem0_error,
-            "local_memory_count": len(self._load_local_notes()),
+            "local_memory": self.local.stats(),
         }
 
     def _load_local_notes(self) -> list[dict]:

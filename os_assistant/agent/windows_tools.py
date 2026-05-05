@@ -64,8 +64,16 @@ class WindowsToolRegistry:
             ),
             "remember": ToolSpec("remember", "memory_tool", "Store compact durable user/task memory."),
             "recall": ToolSpec("recall", "memory_tool", "Search compact durable user/task memory."),
+            "memory_helped": ToolSpec("memory_helped", "memory_tool", "Increase confidence for a memory that helped."),
+            "memory_failed": ToolSpec("memory_failed", "memory_tool", "Decrease confidence for a memory that misled the agent."),
             "browser_tabs": ToolSpec("browser_tabs", "browser_tool", "Read browser DevTools tab metadata if available."),
             "browser_page_summary": ToolSpec("browser_page_summary", "browser_tool", "Read browser page title, URL, and domain if available."),
+            "browser_dom_query": ToolSpec("browser_dom_query", "browser_tool", "Query a browser DOM element by CSS selector."),
+            "browser_dom_click": ToolSpec("browser_dom_click", "browser_tool", "Click a browser DOM element by CSS selector."),
+            "browser_dom_type": ToolSpec("browser_dom_type", "browser_tool", "Type into a browser DOM element by CSS selector."),
+            "perception_status": ToolSpec("perception_status", "vision_tool", "Read live UI/window/target-cache perception status."),
+            "drain_events": ToolSpec("drain_events", "recovery_tool", "Drain recent fast-perception events."),
+            "target_cache_lookup": ToolSpec("target_cache_lookup", "gui_tool", "Find a visible target from the UIAutomation target cache."),
             "uia_click": ToolSpec("uia_click", "gui_tool", "Click a UIAutomation element by name."),
             "uia_type": ToolSpec("uia_type", "gui_tool", "Type into a UIAutomation element by name."),
             "click": ToolSpec("click", "gui_tool", "Coordinate click fallback.", "medium"),
@@ -200,7 +208,7 @@ class ToolRouter:
     GUI_ACTIONS = {
         "uia_click", "uia_type", "click", "double_click", "right_click",
         "drag", "scroll", "type_text", "type_unicode", "press_key", "hotkey",
-        "ocr_click", "ocr_type",
+        "ocr_click", "ocr_type", "target_cache_lookup",
     }
     HARDWARE_ACTIONS = {
         "listen", "record_audio", "capture_photo", "set_volume", "get_volume",
@@ -210,11 +218,11 @@ class ToolRouter:
         "run_powershell", "running_processes", "open_application", "open_url",
         "search_start", "get_system_state",
     }
-    BROWSER_ACTIONS = {"browser_tabs", "browser_page_summary"}
-    VISION_ACTIONS = {"resolve_target", "recover_observe"}
+    BROWSER_ACTIONS = {"browser_tabs", "browser_page_summary", "browser_dom_query", "browser_dom_click", "browser_dom_type"}
+    VISION_ACTIONS = {"resolve_target", "recover_observe", "perception_status"}
     FILE_ACTIONS = {"list_directory", "file_info"}
-    MEMORY_ACTIONS = {"memory_status", "remember", "recall", "save_workflow", "find_workflow"}
-    RECOVERY_ACTIONS = {"wait", "list_tools"}
+    MEMORY_ACTIONS = {"memory_status", "remember", "recall", "memory_helped", "memory_failed", "save_workflow", "find_workflow"}
+    RECOVERY_ACTIONS = {"wait", "list_tools", "drain_events"}
 
     def route(self, action: dict) -> dict:
         action_type = action.get("action", "")

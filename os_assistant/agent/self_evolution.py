@@ -60,6 +60,7 @@ class SelfEvolutionEngine:
         try:
             module = types.ModuleType(skill_name)
             module.__file__ = file_path
+            module.__source__ = python_code
             exec(compile(python_code, file_path, "exec"), module.__dict__)
             sys.modules[skill_name] = module
                 
@@ -144,12 +145,21 @@ class SelfEvolutionEngine:
                     return {"success": False, "error": f"Skill '{skill_name}' not found"}
                 with open(file_path, "r", encoding="utf-8") as f:
                     python_code = f.read()
+                policy = self._validate_skill_policy(python_code)
+                if not policy.get("success"):
+                    return policy
                 module = types.ModuleType(skill_name)
                 module.__file__ = file_path
+                module.__source__ = python_code
                 exec(compile(python_code, file_path, "exec"), module.__dict__)
                 sys.modules[skill_name] = module
             else:
                 module = sys.modules[skill_name]
+                source = getattr(module, "__source__", "")
+                if source:
+                    policy = self._validate_skill_policy(source)
+                    if not policy.get("success"):
+                        return policy
                 
             # Execute the skill
             result = module.run(**params)

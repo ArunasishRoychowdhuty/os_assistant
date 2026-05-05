@@ -34,7 +34,12 @@ from agent.windows_tools import (
     ToolVerifier,
     WindowsToolRegistry,
 )
-from agent.browser_tools import BrowserTools
+from agent.browser_tools import BrowserDOMController
+from agent.event_queue import EventQueue
+from agent.target_cache import TargetCache
+from agent.screen_diff import ScreenDiffTracker
+from agent.live_perception import LivePerceptionEngine
+from agent.action_verifier import ActionVerifier
 from config import Config
 
 
@@ -60,7 +65,18 @@ class AgentCore:
         self.target_resolver = NativeTargetResolver(self.gui_reliability)
         self.tool_router = ToolRouter()
         self.tool_verifier = ToolVerifier(self.tool_router, gui_reliability=self.gui_reliability)
-        self.browser_tools = BrowserTools()
+        self.browser_tools = BrowserDOMController()
+        self.event_queue = EventQueue()
+        self.target_cache = TargetCache(self.uia)
+        self.screen_diff = ScreenDiffTracker()
+        self.live_perception = LivePerceptionEngine(
+            uia=self.uia,
+            screen=self.screen,
+            event_queue=self.event_queue,
+            target_cache=self.target_cache,
+            screen_diff=self.screen_diff,
+        )
+        self.action_verifier = ActionVerifier(self.uia, target_cache=self.target_cache)
         
         # ── Self-Evolution (Dynamic Plugin Architecture) ──
         from agent.self_evolution import SelfEvolutionEngine
@@ -121,6 +137,7 @@ class AgentCore:
             on_change=self._on_background_screen_change
         )
         self.gui_reliability.start_emergency_hotkey()
+        self.live_perception.start()
 
     def _on_background_screen_change(self, screenshot_dict):
         """Callback when screen changes significantly in the background."""
@@ -208,7 +225,7 @@ class AgentCore:
                     })
 
                     # ── PLAN + ACT via AI ──
-                    context = self.memory.get_context_string()
+                    context = self.memory.get_context_string(current_task)
                     state = self.system_state.collect()
                     context += f"\n[SYSTEM STATE] {self.system_state.summary(state)}"
 
@@ -216,6 +233,7 @@ class AgentCore:
                     ui_summary = self.uia.get_window_summary()
                     if ui_summary:
                         context += f"\n[UI TREE] {ui_summary}"
+                    context += f"\n[LIVE PERCEPTION] {self.live_perception.summary()}"
 
                     # Enrich with similar past workflow from long-term memory.
                     similar = self.memory.find_workflow(current_task)
@@ -368,6 +386,12 @@ class AgentCore:
                         if not verify.get("success"):
                             exec_result["success"] = False
                             exec_result["error"] = verify.get("error", "Post-action verification failed")
+                    if exec_result.get("success"):
+                        specific_verify = self.action_verifier.verify(action, exec_result, expected_window)
+                        exec_result["action_verification"] = specific_verify
+                        if not specific_verify.get("success"):
+                            exec_result["success"] = False
+                            exec_result["error"] = specific_verify.get("error", "Action-specific verification failed")
                     step_record = {
                         "thought": thought,
                         "action": action,
@@ -488,6 +512,9 @@ class AgentCore:
         except Exception: pass
         try:
             self.gui_reliability.stop_emergency_hotkey()
+        except Exception: pass
+        try:
+            self.live_perception.stop()
         except Exception: pass
         self._emit("info", {"message": "Agent completely shut down"})
 
@@ -633,7 +660,14 @@ class AgentCore:
                             "success": True,
                             "state": self.system_state.collect(top_n=5),
                             "ui_summary": self.uia.get_window_summary(),
+                            "perception": self.live_perception.snapshot(include_frame_diff=True),
                         }
+                    case "perception_status":
+                        return self.live_perception.snapshot(include_frame_diff=bool(action.get("include_frame_diff", False)))
+                    case "drain_events":
+                        return {"success": True, "events": self.event_queue.drain(limit=int(action.get("limit", 20)))}
+                    case "target_cache_lookup":
+                        return self.target_cache.find(action.get("query", action.get("name", "")))
                     case "list_directory":
                         return ReadOnlyFileTool.list_directory(
                             action.get("path", "."),
@@ -648,13 +682,30 @@ class AgentCore:
                             action.get("text", ""),
                             kind=action.get("kind", "note"),
                             tags=action.get("tags", []),
+                            metadata=action.get("metadata", {}),
+                            confidence=float(action.get("confidence", 1.0)),
                         )
                     case "recall":
-                        return {"success": True, "memories": self.memory.recall(action.get("query", ""))}
+                        return {"success": True, "memories": self.memory.recall(
+                            action.get("query", ""),
+                            limit=int(action.get("limit", 5)),
+                            kinds=action.get("kinds"),
+                            metadata=action.get("metadata", {}),
+                        )}
+                    case "memory_helped":
+                        return self.memory.mark_helped(action.get("memory_id", ""))
+                    case "memory_failed":
+                        return self.memory.mark_failed(action.get("memory_id", ""))
                     case "browser_tabs":
                         return self.browser_tools.get_tabs()
                     case "browser_page_summary":
                         return self.browser_tools.active_page_summary()
+                    case "browser_dom_query":
+                        return self.browser_tools.query(action.get("selector", ""))
+                    case "browser_dom_click":
+                        return self.browser_tools.click(action.get("selector", ""))
+                    case "browser_dom_type":
+                        return self.browser_tools.type_text(action.get("selector", ""), action.get("text", ""))
                     case "uia_click":
                         return self.uia.click_element_by_name(action.get("name", ""))
                     case "uia_type":

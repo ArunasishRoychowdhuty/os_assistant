@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import patch
 
 from agent.memory import Memory
+from agent.memory_store import LocalMemoryStore
 from agent.testing_harness import PlannerOutputVerifier, RecoveryStrategyVerifier
 
 
@@ -20,7 +21,50 @@ class MemoryAndRecoveryTests(unittest.TestCase):
 
             self.assertTrue(saved["success"])
             self.assertEqual(recalled[0]["kind"], "preference")
-            self.assertTrue(os.path.exists(os.path.join(temp, "assistant_memory.json")))
+            self.assertTrue(os.path.exists(os.path.join(temp, "assistant_memory_v2.json")))
+
+    def test_memory_store_dedupes_redacts_and_scores_metadata(self):
+        temp = os.path.abspath(os.path.join("os_assistant", "tests", ".tmp_memory_store"))
+        os.makedirs(temp, exist_ok=True)
+        store = LocalMemoryStore(os.path.join(temp, "memory.json"))
+
+        first = store.remember(
+            "Use UIAutomation for Save button. password=secret123",
+            kind="skill_hint",
+            tags=["gui"],
+            metadata={"app": "notepad", "action": "uia_click"},
+        )
+        second = store.remember(
+            "Use UIAutomation for Save button. password=secret123",
+            kind="skill_hint",
+            tags=["gui"],
+            metadata={"app": "notepad", "action": "uia_click"},
+        )
+        recalled = store.recall(
+            "save button automation",
+            kinds=["skill_hint"],
+            metadata={"app": "notepad", "action": "uia_click"},
+        )
+
+        self.assertTrue(first["success"])
+        self.assertTrue(second["deduped"])
+        self.assertIn("[REDACTED]", recalled[0]["text"])
+        self.assertGreater(recalled[0]["_score"], 0)
+
+    def test_memory_confidence_feedback_changes_ranking_data(self):
+        temp = os.path.abspath(os.path.join("os_assistant", "tests", ".tmp_memory_feedback"))
+        os.makedirs(temp, exist_ok=True)
+        store = LocalMemoryStore(os.path.join(temp, "memory.json"))
+        saved = store.remember("Prefer DOM selector input[name=q] for browser search", kind="skill_hint")
+        memory_id = saved["memory"]["id"]
+
+        helped = store.mark_helped(memory_id)
+        failed = store.mark_failed(memory_id)
+
+        self.assertTrue(helped["success"])
+        self.assertTrue(failed["success"])
+        self.assertEqual(failed["memory"]["helped_count"], 1)
+        self.assertEqual(failed["memory"]["failed_count"], 1)
 
     def test_planner_verifier_accepts_ocr_actions(self):
         self.assertTrue(PlannerOutputVerifier.verify({"action": "ocr_click", "text": "Submit"})["success"])

@@ -38,6 +38,8 @@ class WindowsToolLayerTests(unittest.TestCase):
         self.assertEqual(router.route({"action": "memory_status"})["category"], "memory_tool")
         self.assertEqual(router.route({"action": "capture_photo"})["category"], "hardware_tool")
         self.assertEqual(router.route({"action": "recover_observe"})["category"], "vision_tool")
+        self.assertEqual(router.route({"action": "browser_dom_query"})["category"], "browser_tool")
+        self.assertEqual(router.route({"action": "drain_events"})["category"], "recovery_tool")
 
     def test_system_state_summary_includes_active_window(self):
         collector = SystemStateCollector(uia=FakeUIAutomation())

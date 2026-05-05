@@ -27,7 +27,7 @@ except Exception:
 CONTROL_ACTIONS = {
     "click", "double_click", "right_click", "drag", "scroll",
     "type_text", "type_unicode", "press_key", "hotkey", "hold_key",
-    "key_down", "key_up", "uia_click", "uia_type",
+    "key_down", "key_up", "uia_click", "uia_type", "ocr_click", "ocr_type",
 }
 
 WINDOW_CHANGING_ACTIONS = {
@@ -173,7 +173,7 @@ class GUIReliabilityController:
     def enrich_action_target(self, action: dict) -> dict:
         action = dict(action)
         action_type = action.get("action", "")
-        name = action.get("name") or action.get("target_text")
+        name = action.get("name") or action.get("target_text") or action.get("text")
         if action_type in ("uia_click", "uia_type", "ocr_click", "ocr_type") and name:
             found = self.element_finder.find(name)
             if found.get("success"):
