@@ -12,6 +12,7 @@ python-dotenv==1.1.0
 psutil==7.0.0
 requests==2.32.3
 chromadb==1.0.7
+mem0ai
 uiautomation==2.0.21
 # Hardware / AI extras
 faster-whisper

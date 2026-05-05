@@ -3,7 +3,11 @@ OS Assistant Configuration
 Supports OpenAI, Anthropic, and Google Gemini as AI vision providers.
 """
 import os
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+except Exception:
+    def load_dotenv(*args, **kwargs):
+        return False
 
 load_dotenv()
 

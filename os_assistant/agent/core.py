@@ -25,6 +25,16 @@ from agent.hardware import HardwareController
 from agent.self_enrollment import SelfEnrollmentEngine
 from agent.tts import TTSEngine
 from agent.resource_manager import AdaptiveResourceManager
+from agent.gui_reliability import GUIReliabilityController
+from agent.windows_tools import (
+    NativeTargetResolver,
+    ReadOnlyFileTool,
+    SystemStateCollector,
+    ToolRouter,
+    ToolVerifier,
+    WindowsToolRegistry,
+)
+from agent.browser_tools import BrowserTools
 from config import Config
 
 
@@ -40,6 +50,17 @@ class AgentCore:
         self.uia = UIAutomationHelper()
         self.hardware = HardwareController()
         self.enrollment = SelfEnrollmentEngine(vision_ai=self.vision)  # AI writes lessons
+        self.gui_reliability = GUIReliabilityController(
+            uia=self.uia,
+            screen=self.screen,
+            stop_callback=self.stop,
+        )
+        self.tool_registry = WindowsToolRegistry()
+        self.system_state = SystemStateCollector(uia=self.uia, hardware=self.hardware)
+        self.target_resolver = NativeTargetResolver(self.gui_reliability)
+        self.tool_router = ToolRouter()
+        self.tool_verifier = ToolVerifier(self.tool_router, gui_reliability=self.gui_reliability)
+        self.browser_tools = BrowserTools()
         
         # ── Self-Evolution (Dynamic Plugin Architecture) ──
         from agent.self_evolution import SelfEvolutionEngine
@@ -99,6 +120,7 @@ class AgentCore:
             interval=5.0,
             on_change=self._on_background_screen_change
         )
+        self.gui_reliability.start_emergency_hotkey()
 
     def _on_background_screen_change(self, screenshot_dict):
         """Callback when screen changes significantly in the background."""
@@ -117,6 +139,7 @@ class AgentCore:
         self._live_mode = live_mode
         self._running = True
         self._paused = False
+        self.gui_reliability.clear_emergency_stop()
 
         overall_results = {
             "success": True,
@@ -162,12 +185,16 @@ class AgentCore:
                     if self._paused:
                         time.sleep(0.5)
                         continue
+                    if self.gui_reliability.emergency_stop_requested():
+                        self._emit("info", {"message": "Emergency stop hotkey pressed. Task stopped."})
+                        break
 
                     self._step_count += 1
                     self._emit("step_start", {"step": self._step_count})
 
                     # ── ANTI-HIJACK: Track starting mouse position ──
                     start_mouse_pos = NativeWin32.get_mouse_pos()
+                    expected_window = self.gui_reliability.capture_active_window()
 
                     # ── OBSERVE ──
                     screenshot = self.screen.grab_live() if self._live_mode else self.screen.take_screenshot(save=True)
@@ -182,17 +209,20 @@ class AgentCore:
 
                     # ── PLAN + ACT via AI ──
                     context = self.memory.get_context_string()
+                    state = self.system_state.collect()
+                    context += f"\n[SYSTEM STATE] {self.system_state.summary(state)}"
 
                     # Enrich context with UIAutomation tree
                     ui_summary = self.uia.get_window_summary()
                     if ui_summary:
                         context += f"\n[UI TREE] {ui_summary}"
 
-                    # Enrich with similar past workflows (RAG)
-                    similar = self.vmem.find_similar_workflow(current_task, n=1)
+                    # Enrich with similar past workflow from long-term memory.
+                    similar = self.memory.find_workflow(current_task)
                     if similar:
-                        past = similar[0]
-                        context += f"\n[PAST EXPERIENCE] Similar task done before: {past.get('task', '')}"
+                        content = similar.get("content", "")
+                        if content:
+                            context += f"\n[PAST EXPERIENCE] {content}"
 
                     # ── SELF-ENROLLMENT: inject permanent lessons into context ──
                     action_hint = self._last_action_type
@@ -213,6 +243,8 @@ class AgentCore:
 
                     # Track last action type for lesson context
                     self._last_action_type = action.get("action", "")
+                    route = self.tool_router.route(action)
+                    action["tool_category"] = route["category"]
 
                     # ── Update conversation history ──
                     self._append_history("assistant", f"THOUGHT: {thought}\nACTION: {json.dumps(action)}")
@@ -293,6 +325,7 @@ class AgentCore:
 
                     # ── SCALE COORDINATES ──
                     action = self._scale_coordinates(action)
+                    action = self.gui_reliability.enrich_action_target(action)
 
                     # ── VALIDATE COORDINATES ──
                     if not self._validate_coordinates(action):
@@ -312,7 +345,29 @@ class AgentCore:
                         continue
 
                     # ── EXECUTE ACTION ──
-                    exec_result = self._execute_action(action)
+                    window_check = self.gui_reliability.validate_active_window(expected_window, action)
+                    if not window_check.get("success"):
+                        error_msg = window_check.get("error", "Active window changed before action")
+                        self._emit("error", {"message": error_msg, "step": self._step_count})
+                        self.memory.log_error(action, error_msg)
+                        self._append_history("user", f"Action blocked before execution: {error_msg}")
+                        continue
+
+                    action_timeout = max(
+                        float(action.get("timeout", 10.0)),
+                        float(action.get("duration", 0)) + 1.0,
+                        float(action.get("seconds", 0)) + 1.0,
+                    )
+                    exec_result = self.gui_reliability.run_with_timeout(
+                        lambda: self._execute_action(action),
+                        timeout=action_timeout,
+                    )
+                    if exec_result.get("success"):
+                        verify = self.tool_verifier.verify(action, exec_result)
+                        exec_result["verification"] = verify
+                        if not verify.get("success"):
+                            exec_result["success"] = False
+                            exec_result["error"] = verify.get("error", "Post-action verification failed")
                     step_record = {
                         "thought": thought,
                         "action": action,
@@ -331,6 +386,10 @@ class AgentCore:
                         error_msg = exec_result.get("error", "Action failed")
                         results["errors"].append(error_msg)
                         self.memory.log_error(action, error_msg)
+                        hint = self.gui_reliability.retry_hint(action, exec_result)
+                        if hint:
+                            step_record["retry_hint"] = hint
+                            self._append_history("user", f"Retry hint: {hint['strategy']}")
 
                         lesson = self.enrollment.learn_from_error(
                             action=action, error=error_msg, task=current_task)
@@ -426,6 +485,9 @@ class AgentCore:
         except Exception: pass
         try:
             self.proactive.stop()
+        except Exception: pass
+        try:
+            self.gui_reliability.stop_emergency_hotkey()
         except Exception: pass
         self._emit("info", {"message": "Agent completely shut down"})
 
@@ -560,110 +622,158 @@ class AgentCore:
         try:
             with self.action_lock:
                 match action_type:
+                    case "list_tools":
+                        return self.tool_registry.list_tools()
+                    case "get_system_state":
+                        return self.system_state.collect(top_n=int(action.get("top_n", 5)))
+                    case "resolve_target":
+                        return self.target_resolver.resolve(action.get("query", action.get("name", "")))
+                    case "recover_observe":
+                        return {
+                            "success": True,
+                            "state": self.system_state.collect(top_n=5),
+                            "ui_summary": self.uia.get_window_summary(),
+                        }
+                    case "list_directory":
+                        return ReadOnlyFileTool.list_directory(
+                            action.get("path", "."),
+                            limit=int(action.get("limit", 50)),
+                        )
+                    case "file_info":
+                        return ReadOnlyFileTool.file_info(action.get("path", "."))
+                    case "memory_status":
+                        return {"success": True, "memory": self.memory.get_stats()}
+                    case "remember":
+                        return self.memory.remember(
+                            action.get("text", ""),
+                            kind=action.get("kind", "note"),
+                            tags=action.get("tags", []),
+                        )
+                    case "recall":
+                        return {"success": True, "memories": self.memory.recall(action.get("query", ""))}
+                    case "browser_tabs":
+                        return self.browser_tools.get_tabs()
+                    case "browser_page_summary":
+                        return self.browser_tools.active_page_summary()
                     case "uia_click":
-                    return self.uia.click_element_by_name(action.get("name", ""))
-                case "uia_type":
-                    return self.uia.type_element_by_name(action.get("name", ""), action.get("text", ""))
-                case "run_powershell":
-                    from agent.host_control import HostController
-                    return HostController.run_powershell(action.get("script", ""), timeout=int(action.get("timeout", 30)))
-                case "create_skill":
-                    return self.evolution.create_and_load_skill(action.get("name", ""), action.get("code", ""))
-                case "execute_skill":
-                    return self.evolution.execute_skill(action.get("name", ""), action.get("params", {}))
-                case "click":
-                    return self.actions.click(
+                        return self.uia.click_element_by_name(action.get("name", ""))
+                    case "uia_type":
+                        return self.uia.type_element_by_name(action.get("name", ""), action.get("text", ""))
+                    case "ocr_click":
+                        resolved = self.target_resolver.resolve(action.get("text", action.get("name", "")))
+                        if not resolved.get("success"):
+                            return resolved
+                        target = resolved.get("target", {})
+                        return self.actions.click(int(target["center_x"]), int(target["center_y"]))
+                    case "ocr_type":
+                        resolved = self.target_resolver.resolve(action.get("text", action.get("name", "")))
+                        if not resolved.get("success"):
+                            return resolved
+                        target = resolved.get("target", {})
+                        click = self.actions.click(int(target["center_x"]), int(target["center_y"]))
+                        if not click.get("success"):
+                            return click
+                        return self.actions.type_text(action.get("value", ""))
+                    case "run_powershell":
+                        from agent.host_control import HostController
+                        return HostController.run_powershell(action.get("script", ""), timeout=int(action.get("timeout", 30)))
+                    case "create_skill":
+                        return self.evolution.create_and_load_skill(action.get("name", ""), action.get("code", ""))
+                    case "execute_skill":
+                        return self.evolution.execute_skill(action.get("name", ""), action.get("params", {}))
+                    case "click":
+                        return self.actions.click(
                         int(action["x"]), int(action["y"]),
                         action.get("button", "left"),
                     )
-                case "double_click":
-                    return self.actions.double_click(
+                    case "double_click":
+                        return self.actions.double_click(
                         int(action["x"]), int(action["y"]),
                     )
-                case "right_click":
-                    return self.actions.right_click(
+                    case "right_click":
+                        return self.actions.right_click(
                         int(action["x"]), int(action["y"]),
                     )
-                case "type_text":
-                    return self.actions.type_text(action["text"])
-                case "type_unicode":
-                    return self.actions.type_unicode(action["text"])
-                case "press_key":
-                    return self.actions.press_key(action["key"])
-                case "hotkey":
-                    return self.actions.hotkey(*action["keys"])
-                case "hold_key":
-                    return self.actions.hold_key(action["key"], float(action.get("duration", 1.0)))
-                case "key_down":
-                    return self.actions.key_down(action["key"])
-                case "key_up":
-                    return self.actions.key_up(action["key"])
-                case "scroll":
-                    return self.actions.scroll(
+                    case "type_text":
+                        return self.actions.type_text(action["text"])
+                    case "type_unicode":
+                        return self.actions.type_unicode(action["text"])
+                    case "press_key":
+                        return self.actions.press_key(action["key"])
+                    case "hotkey":
+                        return self.actions.hotkey(*action["keys"])
+                    case "hold_key":
+                        return self.actions.hold_key(action["key"], float(action.get("duration", 1.0)))
+                    case "key_down":
+                        return self.actions.key_down(action["key"])
+                    case "key_up":
+                        return self.actions.key_up(action["key"])
+                    case "scroll":
+                        return self.actions.scroll(
                         int(action["clicks"]),
                         action.get("x"), action.get("y"),
                     )
-                case "drag":
-                    return self.actions.drag(
+                    case "drag":
+                        return self.actions.drag(
                         int(action["start_x"]), int(action["start_y"]),
                         int(action["end_x"]), int(action["end_y"]),
                     )
-                case "open_application":
-                    return self.actions.open_application(action["target"])
-                case "open_url":
-                    return self.actions.open_url(action["url"])
-                case "close_window":
-                    return self.actions.close_window()
-                case "switch_window":
-                    return self.actions.switch_window()
-                case "search_start":
-                    return self.actions.search_start(action["query"])
-                case "wait":
-                    return self.actions.wait(float(action.get("seconds", 1)))
-                case "sequence":
-                    results = []
-                    for sub_action in action.get("actions", []):
-                        res = self._execute_action(sub_action)
-                        results.append(res)
-                        if not res.get("success", False):
-                            break
-                    return {"action": "sequence", "success": all(r.get("success") for r in results), "results": results}
+                    case "open_application":
+                        return self.actions.open_application(action["target"])
+                    case "open_url":
+                        return self.actions.open_url(action["url"])
+                    case "close_window":
+                        return self.actions.close_window()
+                    case "switch_window":
+                        return self.actions.switch_window()
+                    case "search_start":
+                        return self.actions.search_start(action["query"])
+                    case "wait":
+                        return self.actions.wait(float(action.get("seconds", 1)))
+                    case "sequence":
+                        results = []
+                        for sub_action in action.get("actions", []):
+                            res = self._execute_action(sub_action)
+                            results.append(res)
+                            if not res.get("success", False):
+                                break
+                        return {"action": "sequence", "success": all(r.get("success") for r in results), "results": results}
                 # ── Hardware Tools ──
-                case "listen":
-                    return self.hardware.listen(
+                    case "listen":
+                        return self.hardware.listen(
                         duration=float(action.get("duration", 5)),
                         language=action.get("language", "en-US"))
-                case "record_audio":
-                    return self.hardware.record_audio(
+                    case "record_audio":
+                        return self.hardware.record_audio(
                         duration=float(action.get("duration", 5)))
-                case "capture_photo":
-                    res = self.hardware.capture_photo(
+                    case "capture_photo":
+                        res = self.hardware.capture_photo(
                         camera_id=int(action.get("camera_id", 0)))
-                    if res.get("success") and "base64" in res:
-                        # Auto-analyze the photo so the AI actually gets a description
-                        analysis = self.vision.analyze_screen(
-                            screenshot_b64=res["base64"],
-                            user_task="Describe this camera photo in detail.",
-                            context="You are looking at a physical camera feed.",
-                            conversation_history=[]
-                        )
-                        # Remove huge base64 from memory
-                        del res["base64"]
-                        res["description"] = analysis.get("thought", "Analysis failed.")
-                    return res
-                case "set_volume":
-                    return self.hardware.set_volume(int(action["level"]))
-                case "get_volume":
-                    return self.hardware.get_volume()
-                case "mute":
-                    return self.hardware.mute(action.get("mute", True))
-                case "system_info":
-                    return self.hardware.get_system_info()
-                case "running_processes":
-                    return self.hardware.get_running_processes(
+                        if res.get("success") and "base64" in res:
+                            # Auto-analyze the photo so the AI actually gets a description
+                            analysis = self.vision.analyze_screen(
+                                screenshot_b64=res["base64"],
+                                user_task="Describe this camera photo in detail.",
+                                context="You are looking at a physical camera feed.",
+                                conversation_history=[]
+                            )
+                            # Remove huge base64 from memory
+                            del res["base64"]
+                            res["description"] = analysis.get("thought", "Analysis failed.")
+                        return res
+                    case "set_volume":
+                        return self.hardware.set_volume(int(action["level"]))
+                    case "get_volume":
+                        return self.hardware.get_volume()
+                    case "mute":
+                        return self.hardware.mute(action.get("mute", True))
+                    case "system_info":
+                        return self.hardware.get_system_info()
+                    case "running_processes":
+                        return self.hardware.get_running_processes(
                         top_n=int(action.get("top_n", 10)))
-                case _:
-                    return {"action": action_type, "success": False,
+                    case _:
+                        return {"action": action_type, "success": False,
                             "error": f"Unknown action: {action_type}"}
         except Exception as e:
             return {"action": action_type, "success": False, "error": str(e)}

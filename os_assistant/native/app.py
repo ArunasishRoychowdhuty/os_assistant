@@ -723,7 +723,8 @@ class MainWindow(QMainWindow):
         self._set_status("Working", f"Executing: {task[:40]}...")
 
         # Run agent in background QThread to bypass GIL UI freezing
-        self._task_thread = AgentTaskWorker(self.agent, task, live, self.signals)
+        live_mode = self.btn_live_mode.isChecked()
+        self._task_thread = AgentTaskWorker(self.agent, task, live_mode, self.signals)
         self._task_thread.start()
 
     def _on_wake_word(self):
@@ -755,9 +756,9 @@ class MainWindow(QMainWindow):
                 self.signals.new_message.emit("error", res.get("error", "Action failed"), data.get("step", 0))
         elif event == "blocked":
             self.signals.new_message.emit("error", f"Blocked: {data.get('reason', '')}", data.get("step", 0))
-        elif event == "confirm_needed":
+        elif event == "need_confirmation":
             self.signals.confirm_needed.emit(data.get("message", "Approve this action?"))
-        elif event == "task_complete":
+        elif event == "task_done":
             self.signals.new_message.emit("success", data.get("summary", "Done!"), 0)
         elif event == "task_failed":
             self.signals.new_message.emit("error", data.get("summary", "Failed"), 0)

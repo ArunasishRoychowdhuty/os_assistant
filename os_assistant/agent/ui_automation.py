@@ -12,6 +12,11 @@ try:
 except ImportError:
     HAS_UIA = False
 
+try:
+    from agent.native_engine import ENGINE
+except Exception:
+    ENGINE = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -27,6 +32,19 @@ class UIAutomationHelper:
 
     def get_active_window_info(self) -> dict:
         """Get info about the currently focused window."""
+        if ENGINE and ENGINE.available:
+            try:
+                win = ENGINE.active_window()
+                return {
+                    "available": True,
+                    "name": win.get("title", ""),
+                    "class": win.get("class", ""),
+                    "rect": {},
+                    "process_id": win.get("process_id"),
+                    "source": "native_engine",
+                }
+            except Exception as e:
+                logger.warning(f"Native active-window lookup failed: {e}")
         if not self._available:
             return {"available": False}
         try:
