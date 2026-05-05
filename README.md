@@ -1,7 +1,7 @@
 <div align="center">
   <img src="https://img.shields.io/badge/OS-Assistant-0052FF?style=for-the-badge&logo=windows&logoColor=white" alt="OS Assistant Logo">
   <h1>🤖 OS Assistant: Your Intelligent Native Desktop AI Agent</h1>
-  <p><i>Transform your operating system into an intelligent, autonomous environment with advanced AI vision and multi-provider support.</i></p>
+  <p><i>Transform your operating system into an intelligent, autonomous environment with advanced AI vision, C++ native processing, and multi-provider support.</i></p>
 
   <a href="https://github.com/ArunasishRoychowdhuty/os_assistant/issues"><img src="https://img.shields.io/github/issues/ArunasishRoychowdhuty/os_assistant" alt="Issues"></a>
   <a href="https://github.com/ArunasishRoychowdhuty/os_assistant/network/members"><img src="https://img.shields.io/github/forks/ArunasishRoychowdhuty/os_assistant" alt="Forks"></a>
@@ -12,26 +12,34 @@
 
 ## 🌟 Overview
 
-**OS Assistant** is a powerful, production-grade native desktop agent designed to manage, monitor, and interact with your operating system. It acts as a bridge between advanced Large Language Models (LLMs) and your local computer, utilizing cutting-edge **Computer Vision** and **System API** integrations to understand your screen and execute actions seamlessly.
+**OS Assistant** is a powerful, production-grade native desktop agent designed to manage, monitor, and interact with your operating system. It acts as a bridge between advanced Large Language Models (LLMs) and your local computer.
 
-Whether you're automating repetitive tasks, performing system diagnostics, or simply looking for a hands-free desktop companion, OS Assistant brings context-aware AI right to your desktop.
+With the latest major upgrades, OS Assistant now features a **Blazing-Fast C++ Native Engine**, advanced **Live Perception Modules**, **Action Verification**, and an entire **Algorithmic Trading Lab**.
 
-## ✨ Key Features
+## ✨ What's New in the Latest Major Upgrade?
 
-- **👁️ Multi-Provider AI Vision:** Seamlessly switch between the industry's best models for screen understanding:
-  - `GPT-4o` (OpenAI)
-  - `Claude 3.5 Sonnet` (Anthropic)
-  - `Gemini 2.5 Flash` (Google)
-- **🧠 Advanced Long-Term Memory:** Utilizes local Vector Databases to remember user preferences, learn from past interactions, and retain context over long periods.
-- **🛡️ Bulletproof Safety Mechanisms:** Built-in safeguards automatically block destructive commands (e.g., `format`, `del /s`) and prompt for human confirmation before high-risk operations.
-- **⚡ Proactive System Monitoring:** Continuously monitors system health, resource usage, and background processes using robust native Windows APIs.
-- **⚙️ Native OS Automation:** Executes native UI interactions, captures high-quality screenshots, and manages files with a resilient, multi-threaded architecture.
+- **⚡ C++ Native Engine (`native_engine/`):** We've introduced a high-performance C++ backend for CPU-intensive tasks, reducing latency for OS interactions.
+- **👁️ Live & Fast Perception (`live_perception.py`, `fast_perception.py`):** Real-time screen analysis, DOM monitoring, and `screen_diff.py` allow the agent to detect dynamic UI changes instantly.
+- **🎯 GUI Reliability & Action Verification:** Ensures that clicks and typing actions are verified. The agent double-checks the screen state before and after actions to ensure execution success.
+- **📈 Fully-Featured Trading Lab (`trading_lab/`):** A robust automated trading framework integrated right into the project! Features include:
+  - Broker Integrations & Paper Trading
+  - Advanced Risk Management & Order Gating
+  - Strategy Execution Models
+- **🧪 Automated Testing Harness:** Comprehensive `pytest` infrastructure for ensuring agent reliability, memory recovery, and GUI tools.
+
+## ✨ Core Features
+
+- **Multi-Provider AI Vision:** Seamlessly switch between `GPT-4o`, `Claude 3.5 Sonnet`, and `Gemini 2.5 Flash`.
+- **Advanced Long-Term Memory:** Utilizes local Vector Databases and `memory_store.py` to remember preferences and context over long periods.
+- **Bulletproof Safety Mechanisms:** Built-in safeguards automatically block destructive commands (`format`, `rm -rf`) and prompt for human confirmation.
+- **Proactive System Monitoring:** Continuously monitors system health and resource usage using native Windows APIs.
 
 ## 🚀 Getting Started
 
 ### Prerequisites
 
 - **Python 3.9+** installed on your system.
+- **C++ Build Tools** (Optional, for compiling the native engine).
 - An API key from at least one supported AI provider (OpenAI, Anthropic, or Google).
 - Git installed on your system.
 
@@ -57,12 +65,20 @@ source venv/bin/activate
 pip install -r os_assistant/requirements.txt
 ```
 
-**4. Environment Setup**
+**4. Compile Native Engine (Optional but Recommended)**
+```bash
+cd native_engine
+cmake .
+cmake --build . --config Release
+cd ..
+```
+
+**5. Environment Setup**
 Copy the template configuration file:
 ```bash
 cp os_assistant/.env.example os_assistant/.env
 ```
-Open the newly created `.env` file and securely add your API keys.
+Open `.env` and securely add your API keys.
 
 ## 🛠️ Configuration
 
@@ -71,8 +87,6 @@ Fine-tune the assistant by editing `os_assistant/config.py` or your `.env` file:
 - `AI_PROVIDER`: Set your preferred brain (`openai`, `anthropic`, or `gemini`).
 - `CONFIRM_DESTRUCTIVE`: Toggle human-in-the-loop safety confirmations `True`/`False`.
 - `MAX_RETRIES`: Adjust the agent's persistence on failed tasks.
-
-*Note: The assistant automatically manages its screenshot cache and vector databases within your local AppData directory.*
 
 ## 🕹️ Usage
 
