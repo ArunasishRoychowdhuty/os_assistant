@@ -167,5 +167,29 @@ cython_debug/
 # OS files
 .DS_Store
 Thumbs.db
+
+# ── Project-specific ignores ────────────────────────
 os_assistant/data/
-os_assistant/tests/.tmp_skills_good/
+
+# Test artifacts & temp directories
+os_assistant/tests/.tmp_*/
+os_assistant/tests/tmp*/
+pytest-cache-files-*/
+tmp*/
+
+# C++ build output
+native_engine/build/
+*.dll
+*.dll.a
+
+# Runtime logs
+aura_stderr.log
+aura_stdout.log
+*.log
+
+# Video frame analysis (generated at runtime)
+video_analysis_frames/
+video_frames_analysis/
+
+# UV package manager cache
+.uv-cache/
