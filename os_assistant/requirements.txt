@@ -3,16 +3,16 @@ PyQt6==6.9.0
 pyautogui==0.9.54
 pydirectinput
 pyperclip==1.9.0
-Pillow==11.2.1
+Pillow==12.2.0
 mss==9.0.2
 dxcam; platform_system == "Windows"
 pytesseract
 openai==1.78.1
 anthropic==0.52.0
 google-generativeai==0.8.5
-python-dotenv==1.1.0
+python-dotenv==1.2.2
 psutil==7.0.0
-requests==2.32.3
+requests==2.33.0
 chromadb==1.0.7
 mem0ai
 uiautomation==2.0.21
