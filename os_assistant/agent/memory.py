@@ -24,6 +24,10 @@ class Memory:
         self._init_mem0()
 
     def _init_mem0(self):
+        if not getattr(Config, "ENABLE_MEM0", False):
+            self.m0 = None
+            self._mem0_error = "Mem0 disabled; using local durable memory only."
+            return
         try:
             from mem0 import Memory as Mem0Client
             
@@ -52,10 +56,14 @@ class Memory:
             self.m0 = Mem0Client.from_config(mem0_config)
             self._mem0_error = ""
             logger.info("Mem0 initialized successfully.")
+        except ImportError as e:
+            self.m0 = None
+            self._mem0_error = str(e)
+            logger.info("Mem0 not installed; using local durable memory only.")
         except Exception as e:
             self.m0 = None
             self._mem0_error = str(e)
-            logger.error(f"Failed to initialize Mem0: {e}")
+            logger.warning(f"Failed to initialize Mem0: {e}")
 
     # ── Short-Term Memory (RAM) ──
     def add_step(self, step: dict):
@@ -123,33 +131,42 @@ class Memory:
             return  # If the workflow was just raw clicks, it's useless to memorize!
             
         prompt = f"System Workflow Learned: '{name}'. High-level steps taken: {', '.join(semantic_steps)}. Tags: {tags}"
-        self.remember(
-            prompt,
+        self._route_add(
+            text=prompt,
             kind="workflow_summary",
             tags=(tags or []) + ["workflow"],
             metadata={"task": name, "action": "workflow"},
-            confidence=1.15,
+            user_id="os_agent",
+            confidence=1.15
         )
-        if not self.m0:
-            return
-        try:
-            self._run_mem0_async("save_workflow", self.m0.add, prompt, user_id="os_agent")
-        except Exception as e:
-            logger.error(f"Mem0 save_workflow failed: {e}")
 
     def find_workflow(self, query: str) -> dict | None:
-        local = self.recall(query, limit=1, kinds=["workflow_summary"])
-        if local:
-            return {"name": "Local Recall", "content": local[0].get("text", "")}
-        if not self.m0: return None
-        try:
-            results = self.m0.search(f"Workflow for: {query}", user_id="os_agent")
-            memory_text = self._first_memory_text(results)
-            if memory_text:
-                return {"name": "Mem0 Recall", "content": memory_text}
-        except Exception as e:
-            logger.error(f"Mem0 find_workflow failed: {e}")
+        results = self._route_search(f"Workflow for: {query}", limit=1, kinds=["workflow_summary"], user_id="os_agent")
+        if results:
+            return {"name": "Routed Recall", "content": results[0]}
         return None
+    # ── Single Memory Router (Unifies Local and Mem0) ──
+    def _route_add(self, text: str, kind: str, tags: list[str] | None, metadata: dict | None, user_id: str, confidence: float):
+        self.remember(text, kind=kind, tags=tags, metadata=metadata, confidence=confidence)
+        if self.m0:
+            try:
+                self._run_mem0_async(f"add_{kind}", self.m0.add, text, user_id=user_id)
+            except Exception as e:
+                logger.error(f"Mem0 route_add failed: {e}")
+
+    def _route_search(self, query: str, limit: int, kinds: list[str] | None = None, metadata: dict | None = None, user_id: str = "os_agent") -> list[str]:
+        local_results = [item["text"] for item in self.recall(query, limit=limit, kinds=kinds, metadata=metadata)]
+        remote_results = []
+        if self.m0:
+            try:
+                raw_remote = self.m0.search(query, user_id=user_id)
+                remote_results = [self._memory_text(r) for r in self._iter_memories(raw_remote) if self._memory_text(r)]
+            except Exception as e:
+                logger.error(f"Mem0 route_search failed: {e}")
+        
+        # Merge and deduplicate
+        combined = list(dict.fromkeys(local_results + remote_results))
+        return combined[:limit]
 
     # Local durable memory fallback. This stores compact facts/preferences only,
     # not workflow replay logs or run history.
@@ -186,56 +203,36 @@ class Memory:
             
         target = action.get("name") or action.get("text") or str(action.get("script", ""))[:50]
         prompt = f"System Error encountered: When trying to do '{action_type}' on '{target}', error occurred: {error}. Context: {context}"
-        self.remember(
-            prompt,
+        
+        self._route_add(
+            text=prompt,
             kind="error_lesson",
             tags=["error", action_type],
             metadata={"action": action_type},
-            confidence=0.95,
+            user_id="os_agent",
+            confidence=0.95
         )
-        if not self.m0:
-            return
-        try:
-            self._run_mem0_async("log_error", self.m0.add, prompt, user_id="os_agent")
-        except Exception as e:
-            logger.error(f"Mem0 log_error failed: {e}")
 
     def get_error_warnings(self, action_type: str) -> list:
-        local = [{"error": item["text"], "memory_id": item["id"]} for item in self.recall(
-            f"errors related to action {action_type}",
+        results = self._route_search(
+            f"Errors related to action: {action_type}",
+            limit=5,
             kinds=["error_lesson"],
             metadata={"action": action_type},
-        )]
-        if not self.m0: return local
-        try:
-            results = self.m0.search(f"Errors related to action: {action_type}", user_id="os_agent")
-            return local + [{"error": self._memory_text(r)} for r in self._iter_memories(results)]
-        except Exception as e:
-            logger.error(f"Mem0 get_error_warnings failed: {e}")
-            return local
+            user_id="os_agent"
+        )
+        return [{"error": r, "memory_id": "routed"} for r in results]
 
     # ── User Personalization (Mem0 specific) ──
     
     def learn_user_preference(self, text: str):
         """Learn things like 'User prefers dark mode' or 'Don't open Chrome'."""
-        self.remember(text, kind="preference", tags=["user"], confidence=1.2)
-        if not self.m0: return
-        try:
-            self._run_mem0_async("learn_user_preference", self.m0.add, text, user_id="user")
-        except Exception as e:
-            logger.error(f"Mem0 learn_user_preference failed: {e}")
+        self._route_add(text, kind="preference", tags=["user"], metadata={}, user_id="user", confidence=1.2)
             
     def get_user_preferences(self, query: str) -> str:
         """Ask Mem0 for relevant user preferences for a task."""
-        local = "\n".join(item["text"] for item in self.recall(query, limit=5, kinds=["preference"]))
-        if not self.m0: return local
-        try:
-            results = self.m0.search(query, user_id="user")
-            remote = "\n".join([self._memory_text(r) for r in self._iter_memories(results) if self._memory_text(r)])
-            return "\n".join(x for x in (local, remote) if x)
-        except Exception as e:
-            logger.error(f"Mem0 get_user_preferences failed: {e}")
-            return local
+        results = self._route_search(query, limit=5, kinds=["preference"], user_id="user")
+        return "\n".join(results)
 
     def flush(self):
         pass

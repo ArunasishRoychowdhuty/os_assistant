@@ -14,33 +14,19 @@ class ProactiveMonitor:
         self._known_errors = set()
 
     def start(self):
-        if self._thread is None or not self._thread.is_alive():
-            self._stop_event.clear()
-            self._thread = threading.Thread(
-                target=self._monitor_loop, 
-                daemon=True, 
-                name="ProactiveMonitor"
-            )
-            self._thread.start()
+        # Background thread removed: Unified into AdaptiveResourceManager
+        pass
 
     def stop(self):
-        self._stop_event.set()
-        if self._thread:
-            self._thread.join(timeout=2)
+        pass
 
-    def _monitor_loop(self):
-        while not self._stop_event.is_set():
-            try:
-                self._check_event_logs()
-                self._check_system_health()
-            except Exception as e:
-                logger.error(f"Proactive monitor error: {e}")
-            
-            # Check every 60 seconds (broken down for fast cancellation)
-            for _ in range(60):
-                if self._stop_event.is_set():
-                    break
-                time.sleep(1)
+    def poll(self):
+        """Called periodically by the unified background router."""
+        try:
+            self._check_event_logs()
+            self._check_system_health()
+        except Exception as e:
+            logger.error(f"Proactive monitor poll error: {e}")
 
     def _check_event_logs(self):
         # Query System and Application logs for Errors (Level=2) in the last 60 seconds

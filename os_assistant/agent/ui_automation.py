@@ -5,6 +5,9 @@ Reads the Windows UI tree directly instead of guessing from pixels.
 100x faster and more accurate than vision-only approach for standard apps.
 """
 import logging
+import ctypes
+import time
+from ctypes import wintypes
 
 try:
     import uiautomation as auto
@@ -46,24 +49,26 @@ class UIAutomationHelper:
             except Exception as e:
                 logger.warning(f"Native active-window lookup failed: {e}")
         if not self._available:
-            return {"available": False}
+            return self._fallback_active_window()
         try:
             win = auto.GetForegroundControl()
+            if not win:
+                return self._fallback_active_window()
             return {
                 "available": True,
-                "name": win.Name or "",
-                "class": win.ClassName or "",
+                "name": self._safe_attr(win, "Name"),
+                "class": self._safe_attr(win, "ClassName"),
                 "rect": {
-                    "left": win.BoundingRectangle.left,
-                    "top": win.BoundingRectangle.top,
-                    "right": win.BoundingRectangle.right,
-                    "bottom": win.BoundingRectangle.bottom,
+                    "left": getattr(getattr(win, "BoundingRectangle", None), "left", 0),
+                    "top": getattr(getattr(win, "BoundingRectangle", None), "top", 0),
+                    "right": getattr(getattr(win, "BoundingRectangle", None), "right", 0),
+                    "bottom": getattr(getattr(win, "BoundingRectangle", None), "bottom", 0),
                 },
-                "process_id": win.ProcessId,
+                "process_id": getattr(win, "ProcessId", None),
             }
         except Exception as e:
             logger.warning(f"UIAutomation error: {e}")
-            return {"available": True, "error": str(e)}
+            return self._fallback_active_window(error=str(e))
 
     def get_ui_elements(self, max_depth: int = 3) -> list[dict]:
         """Get all interactive UI elements from the active window."""
@@ -84,14 +89,42 @@ class UIAutomationHelper:
             return None
         try:
             win = auto.GetForegroundControl()
-            ctrl = win.GetFirstChildControl()
-            while ctrl:
-                if ctrl.Name and name.lower() in ctrl.Name.lower():
-                    return self._element_to_dict(ctrl)
-                ctrl = ctrl.GetNextSiblingControl()
+            target = win.Control(searchDepth=5, Name=name)
+            if target.Exists(0.1):
+                return self._element_to_dict(target)
+            target = win.Control(searchDepth=5, RegexName=f"(?i).*{name}.*")
+            if target.Exists(0.1):
+                return self._element_to_dict(target)
             return None
         except Exception:
             return None
+
+    def wait_for_element(self, name: str, timeout: float = 5.0, interval: float = 0.2) -> dict:
+        """Wait until a UIAutomation element is visible in the active window."""
+        deadline = time.time() + max(0.1, timeout)
+        last_error = ""
+        while time.time() < deadline:
+            found = self.find_element_by_name(name)
+            if found:
+                found["success"] = True
+                return found
+            last_error = f"Element '{name}' not found"
+            time.sleep(max(0.05, interval))
+        return {"success": False, "error": last_error or f"Timed out waiting for '{name}'"}
+
+    def wait_for_window(self, query: str, timeout: float = 8.0, interval: float = 0.2) -> dict:
+        """Wait until the active window title/class contains query."""
+        needle = (query or "").lower().strip()
+        deadline = time.time() + max(0.1, timeout)
+        last = {}
+        while time.time() < deadline:
+            info = self.get_active_window_info()
+            last = info
+            haystack = f"{info.get('name', '')} {info.get('class', '')}".lower()
+            if needle and needle in haystack:
+                return {"success": True, "window": info}
+            time.sleep(max(0.05, interval))
+        return {"success": False, "error": f"Timed out waiting for window: {query}", "last_window": last}
 
     def get_text_from_focused(self) -> str:
         """Get text content from the currently focused control."""
@@ -113,7 +146,9 @@ class UIAutomationHelper:
             return ""
         try:
             win = auto.GetForegroundControl()
-            parts = [f"Window: {win.Name} ({win.ClassName})"]
+            if not win:
+                return ""
+            parts = [f"Window: {self._safe_attr(win, 'Name')} ({self._safe_attr(win, 'ClassName')})"]
             elements = self.get_ui_elements(max_depth=2)
             buttons = [e for e in elements if e["type"] == "ButtonControl"]
             edits = [e for e in elements if e["type"] == "EditControl"]
@@ -139,6 +174,8 @@ class UIAutomationHelper:
             import time
             # Search active window
             win = auto.GetForegroundControl()
+            if not win:
+                return {"success": False, "error": "No active UIAutomation window"}
             target = win.Control(searchDepth=5, Name=name)
             if not target.Exists(0.2):
                 # Try partial match (Regex)
@@ -179,6 +216,8 @@ class UIAutomationHelper:
         try:
             import time
             win = auto.GetForegroundControl()
+            if not win:
+                return {"success": False, "error": "No active UIAutomation window"}
             target = win.Control(searchDepth=5, Name=name)
             if not target.Exists(0.2):
                 target = win.Control(searchDepth=5, RegexName=f"(?i).*{name}.*")
@@ -228,16 +267,55 @@ class UIAutomationHelper:
         try:
             rect = ctrl.BoundingRectangle
             return {
-                "name": ctrl.Name or "",
-                "type": ctrl.ControlTypeName or "",
-                "class": ctrl.ClassName or "",
+                "name": UIAutomationHelper._safe_attr(ctrl, "Name"),
+                "type": UIAutomationHelper._safe_attr(ctrl, "ControlTypeName"),
+                "class": UIAutomationHelper._safe_attr(ctrl, "ClassName"),
                 "rect": {
                     "left": rect.left, "top": rect.top,
                     "right": rect.right, "bottom": rect.bottom,
                 },
                 "center_x": (rect.left + rect.right) // 2,
                 "center_y": (rect.top + rect.bottom) // 2,
-                "enabled": ctrl.IsEnabled,
+                "enabled": bool(getattr(ctrl, "IsEnabled", False)),
             }
         except Exception:
             return {"name": "", "type": "", "class": "", "rect": {}, "enabled": False}
+
+    @staticmethod
+    def _safe_attr(obj, name: str) -> str:
+        value = getattr(obj, name, "")
+        return value or ""
+
+    def _fallback_active_window(self, error: str | None = None) -> dict:
+        try:
+            user32 = ctypes.windll.user32
+            hwnd = user32.GetForegroundWindow()
+            if not hwnd:
+                return {"available": False, "error": error or "No active window"}
+            length = user32.GetWindowTextLengthW(hwnd)
+            title = ctypes.create_unicode_buffer(length + 1)
+            user32.GetWindowTextW(hwnd, title, length + 1)
+            class_buf = ctypes.create_unicode_buffer(256)
+            user32.GetClassNameW(hwnd, class_buf, 256)
+            pid = ctypes.c_ulong()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            rect = wintypes.RECT()
+            user32.GetWindowRect(hwnd, ctypes.byref(rect))
+            result = {
+                "available": True,
+                "name": title.value,
+                "class": class_buf.value,
+                "rect": {
+                    "left": rect.left,
+                    "top": rect.top,
+                    "right": rect.right,
+                    "bottom": rect.bottom,
+                },
+                "process_id": pid.value,
+                "source": "win32_fallback",
+            }
+            if error:
+                result["warning"] = error
+            return result
+        except Exception as e:
+            return {"available": False, "error": error or str(e)}

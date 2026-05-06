@@ -52,11 +52,24 @@ class WindowsToolRegistry:
             ),
             "list_directory": ToolSpec(
                 "list_directory", "file_tool",
-                "List files and folders in a directory without modifying them.",
+                "List files and folders in a directory.",
             ),
             "file_info": ToolSpec(
                 "file_info", "file_tool",
-                "Read metadata for a file or directory without modifying it.",
+                "Read metadata for a file or directory.",
+            ),
+            "read_file": ToolSpec(
+                "read_file", "file_tool",
+                "Read contents of a file.",
+            ),
+            "write_file": ToolSpec(
+                "write_file", "file_tool",
+                "Write or append text to a file.",
+                "medium"
+            ),
+            "search_files": ToolSpec(
+                "search_files", "file_tool",
+                "Search for files by name pattern in a directory.",
             ),
             "memory_status": ToolSpec(
                 "memory_status", "memory_tool",
@@ -72,10 +85,18 @@ class WindowsToolRegistry:
             "browser_dom_click": ToolSpec("browser_dom_click", "browser_tool", "Click a browser DOM element by CSS selector."),
             "browser_dom_type": ToolSpec("browser_dom_type", "browser_tool", "Type into a browser DOM element by CSS selector."),
             "perception_status": ToolSpec("perception_status", "vision_tool", "Read live UI/window/target-cache perception status."),
+            "capture_status": ToolSpec("capture_status", "vision_tool", "Read live screen capture backend status."),
+            "ocr_status": ToolSpec("ocr_status", "vision_tool", "Check whether OCR fallback is available."),
             "drain_events": ToolSpec("drain_events", "recovery_tool", "Drain recent fast-perception events."),
             "target_cache_lookup": ToolSpec("target_cache_lookup", "gui_tool", "Find a visible target from the UIAutomation target cache."),
             "uia_click": ToolSpec("uia_click", "gui_tool", "Click a UIAutomation element by name."),
             "uia_type": ToolSpec("uia_type", "gui_tool", "Type into a UIAutomation element by name."),
+            "smart_click": ToolSpec("smart_click", "gui_tool", "Click through UIA, target cache, OCR, then coordinate fallback."),
+            "smart_type": ToolSpec("smart_type", "gui_tool", "Focus/type through UIA, target cache, OCR, then coordinate fallback."),
+            "wait_for_target": ToolSpec("wait_for_target", "gui_tool", "Wait for a visible UI target/control."),
+            "wait_for_window": ToolSpec("wait_for_window", "windows_system_tool", "Wait for a window title/class to become active."),
+            "wait_until_screen_stable": ToolSpec("wait_until_screen_stable", "vision_tool", "Wait for screen changes to settle."),
+            "verify_recipient": ToolSpec("verify_recipient", "gui_tool", "Verify a messaging/email recipient is selected before sending."),
             "click": ToolSpec("click", "gui_tool", "Coordinate click fallback.", "medium"),
             "type_text": ToolSpec("type_text", "gui_tool", "Type text through native keyboard input."),
             "run_powershell": ToolSpec(
@@ -208,7 +229,8 @@ class ToolRouter:
     GUI_ACTIONS = {
         "uia_click", "uia_type", "click", "double_click", "right_click",
         "drag", "scroll", "type_text", "type_unicode", "press_key", "hotkey",
-        "ocr_click", "ocr_type", "target_cache_lookup",
+        "ocr_click", "ocr_type", "target_cache_lookup", "smart_click", "smart_type",
+        "wait_for_target", "verify_recipient",
     }
     HARDWARE_ACTIONS = {
         "listen", "record_audio", "capture_photo", "set_volume", "get_volume",
@@ -216,11 +238,11 @@ class ToolRouter:
     }
     WINDOWS_ACTIONS = {
         "run_powershell", "running_processes", "open_application", "open_url",
-        "search_start", "get_system_state",
+        "search_start", "get_system_state", "wait_for_window",
     }
     BROWSER_ACTIONS = {"browser_tabs", "browser_page_summary", "browser_dom_query", "browser_dom_click", "browser_dom_type"}
-    VISION_ACTIONS = {"resolve_target", "recover_observe", "perception_status"}
-    FILE_ACTIONS = {"list_directory", "file_info"}
+    VISION_ACTIONS = {"resolve_target", "recover_observe", "perception_status", "capture_status", "ocr_status", "wait_until_screen_stable"}
+    FILE_ACTIONS = {"list_directory", "file_info", "read_file", "write_file", "search_files"}
     MEMORY_ACTIONS = {"memory_status", "remember", "recall", "memory_helped", "memory_failed", "save_workflow", "find_workflow"}
     RECOVERY_ACTIONS = {"wait", "list_tools", "drain_events"}
 
@@ -269,8 +291,8 @@ class ToolVerifier:
         return {"success": True, "verified": "not_classified"}
 
 
-class ReadOnlyFileTool:
-    """Read-only filesystem helpers for planner context."""
+class FileTool:
+    """Read/Write filesystem helpers for planner context."""
 
     @staticmethod
     def list_directory(path: str, limit: int = 50) -> dict:
@@ -311,5 +333,45 @@ class ReadOnlyFileTool:
                 "size": stat.st_size,
                 "modified": stat.st_mtime,
             }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    @staticmethod
+    def read_file(path: str, max_lines: int = 1000) -> dict:
+        try:
+            target = Path(path).expanduser().resolve()
+            if not target.exists() or not target.is_file():
+                return {"success": False, "error": f"File not found: {target}"}
+            with open(target, 'r', encoding='utf-8', errors='replace') as f:
+                lines = f.readlines()
+            content = "".join(lines[:max_lines])
+            if len(lines) > max_lines:
+                content += f"\n\n... [TRUNCATED AFTER {max_lines} LINES] ..."
+            return {"success": True, "path": str(target), "content": content}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    @staticmethod
+    def write_file(path: str, content: str, mode: str = "w") -> dict:
+        try:
+            target = Path(path).expanduser().resolve()
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with open(target, mode, encoding='utf-8') as f:
+                f.write(content)
+            return {"success": True, "path": str(target), "message": f"Successfully wrote to file."}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    @staticmethod
+    def search_files(directory: str, pattern: str) -> dict:
+        try:
+            import glob
+            target_dir = Path(directory).expanduser().resolve()
+            if not target_dir.exists():
+                return {"success": False, "error": f"Directory not found: {target_dir}"}
+            
+            search_path = os.path.join(str(target_dir), "**", pattern)
+            matches = glob.glob(search_path, recursive=True)
+            return {"success": True, "directory": str(target_dir), "pattern": pattern, "matches": matches[:50]}
         except Exception as e:
             return {"success": False, "error": str(e)}

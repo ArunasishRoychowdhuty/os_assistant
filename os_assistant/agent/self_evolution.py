@@ -23,8 +23,8 @@ class SelfEvolutionEngine:
         if self.skills_dir not in sys.path:
             sys.path.insert(0, self.skills_dir)
             
-    def create_and_load_skill(self, skill_name: str, python_code: str) -> dict:
-        """Syntax-checks, sandbox-tests, then hot-reloads a new Python skill."""
+    def propose_skill(self, skill_name: str, python_code: str) -> dict:
+        """Syntax-checks and sandbox-tests a new Python skill, but requires registry activation."""
         skill_name = skill_name.replace(" ", "_").replace("-", "_").lower()
         if not skill_name.isidentifier():
             return {"success": False, "error": f"Invalid skill name '{skill_name}'. Must be a valid Python identifier."}
@@ -39,45 +39,72 @@ class SelfEvolutionEngine:
             compile(python_code, file_path, 'exec')
         except SyntaxError as e:
             error_msg = f"SyntaxError in generated code at line {e.lineno}: {e.msg}"
-            self.memory.log_error({"action": "create_skill", "name": skill_name}, error_msg, "Compile Phase")
+            self.memory.log_error({"action": "propose_skill", "name": skill_name}, error_msg, "Compile Phase")
             return {"success": False, "error": error_msg}
 
         test = self._sandbox_test_skill(skill_name, python_code)
         if not test.get("success"):
-            self.memory.log_error({"action": "create_skill", "name": skill_name}, test["error"], "Sandbox Test")
+            self.memory.log_error({"action": "propose_skill", "name": skill_name}, test["error"], "Sandbox Test")
             return test
 
         try:
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write(python_code)
         except Exception as e:
-            return {"success": False, "error": f"Failed to save skill file: {e}"}
+            return {"success": False, "error": f"Failed to save skill proposal file: {e}"}
 
+        return {
+            "success": True, 
+            "message": f"Skill '{skill_name}' successfully proposed and validated in simulation! Action required: You must use 'activate_skill' to enable it."
+        }
+
+    def create_and_load_skill(self, skill_name: str, python_code: str) -> dict:
+        """Compatibility path: validate, save, and activate a skill in one call."""
+        proposed = self.propose_skill(skill_name, python_code)
+        if not proposed.get("success"):
+            return proposed
+
+        normalized_name = skill_name.replace(" ", "_").replace("-", "_").lower()
+        activated = self.activate_skill(normalized_name)
+        if not activated.get("success"):
+            return activated
+
+        return {
+            "success": True,
+            "message": f"Skill '{normalized_name}' successfully created and loaded.",
+        }
+        
+    def activate_skill(self, skill_name: str) -> dict:
+        """Activates a proposed skill by injecting it into the live running app."""
+        file_path = os.path.join(self.skills_dir, f"{skill_name}.py")
+        if not os.path.exists(file_path):
+            return {"success": False, "error": f"Proposed skill '{skill_name}' not found."}
+            
         if self.skills_dir not in sys.path:
             sys.path.insert(0, self.skills_dir)
             
-        # 3. Dynamic Hot-Reloading without import-cache side effects.
         try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                python_code = f.read()
+                
             module = types.ModuleType(skill_name)
             module.__file__ = file_path
             module.__source__ = python_code
             exec(compile(python_code, file_path, "exec"), module.__dict__)
             sys.modules[skill_name] = module
                 
-            # Contract Verification: The skill must export a `run` function
             if not hasattr(module, 'run'):
                 os.remove(file_path)
                 if skill_name in sys.modules:
                     del sys.modules[skill_name]
                 return {"success": False, "error": "Skill module must define a 'def run(**kwargs):' function."}
                 
-            # 4. Save the Evolution into Mem0's "Brain"
-            success_msg = f"I have successfully learned a new skill. I can now '{skill_name}'."
+            success_msg = f"I have successfully activated a new skill. I can now '{skill_name}'."
             self.memory.learn_user_preference(success_msg)
             
             return {
                 "success": True, 
-                "message": f"Skill '{skill_name}' successfully learned and hot-reloaded! You can now use execute_skill."
+                "message": f"Skill '{skill_name}' successfully activated and hot-reloaded! You can now use execute_skill."
             }
             
         except Exception as e:
@@ -86,8 +113,8 @@ class SelfEvolutionEngine:
                 os.remove(file_path)
             if skill_name in sys.modules:
                 del sys.modules[skill_name]
-            error_msg = f"Failed to import/reload skill: {str(e)}\n{traceback.format_exc()}"
-            self.memory.log_error({"action": "create_skill", "name": skill_name}, error_msg, "Import Phase")
+            error_msg = f"Failed to activate/reload skill: {str(e)}\n{traceback.format_exc()}"
+            self.memory.log_error({"action": "activate_skill", "name": skill_name}, error_msg, "Import Phase")
             return {"success": False, "error": error_msg}
 
     @staticmethod

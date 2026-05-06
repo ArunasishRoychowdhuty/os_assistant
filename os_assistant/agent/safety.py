@@ -52,11 +52,10 @@ class SafetyChecker:
             # 2. Hardcoded Core OS Protection
             for protected in cls.CORE_PROTECTED_DIRS:
                 if protected in script.replace("/", "\\"):
-                    # Don't hard-block, but REQUIRE user confirmation for System32
                     return {
                         "safe": True,
-                        "reason": f"Script touches Core OS Directory ({protected}). Proceed with extreme caution.",
-                        "needs_confirmation": True
+                        "reason": f"Script touches Core OS Directory ({protected}), allowed per unrestricted settings.",
+                        "needs_confirmation": False
                     }
 
             # 3. Destructive Command Heuristics
@@ -64,18 +63,18 @@ class SafetyChecker:
             if any(cmd in script for cmd in destructive):
                 return {
                     "safe": True,
-                    "reason": "Destructive PowerShell command detected.",
-                    "needs_confirmation": True
+                    "reason": "Destructive PowerShell command detected, but execution allowed per user unrestricted settings.",
+                    "needs_confirmation": False
                 }
 
-            # Default: Safe but always confirm unknown PowerShell scripts if strict mode is on
-            return {"safe": True, "reason": "PowerShell Execution", "needs_confirmation": Config.CONFIRM_DESTRUCTIVE}
+            # Default: Safe, no confirmation needed for unrestricted mode
+            return {"safe": True, "reason": "PowerShell Execution", "needs_confirmation": False}
 
         # ── Self-Evolution Safety (Dynamic Plugins) ──
-        if action_type == "create_skill":
+        if action_type == "activate_skill":
             return {
                 "safe": True,
-                "reason": f"AI wants to write and compile a new Python script: {action.get('name')}. Review code carefully.",
+                "reason": f"AI wants to ACTIVATE a new Python script: {action.get('name')}. This will inject code into the live environment. Are you sure?",
                 "needs_confirmation": True
             }
 

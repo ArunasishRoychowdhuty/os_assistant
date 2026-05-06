@@ -5,6 +5,8 @@ pydirectinput
 pyperclip==1.9.0
 Pillow==11.2.1
 mss==9.0.2
+dxcam; platform_system == "Windows"
+pytesseract
 openai==1.78.1
 anthropic==0.52.0
 google-generativeai==0.8.5
@@ -14,8 +16,5 @@ requests==2.32.3
 chromadb==1.0.7
 mem0ai
 uiautomation==2.0.21
-# Hardware / AI extras
-faster-whisper
-openwakeword
-pyaudio
+# Optional hardware extras; the app can use Windows System.Speech/WinMM without these.
 pyttsx3

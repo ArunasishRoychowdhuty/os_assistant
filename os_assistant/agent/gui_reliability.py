@@ -102,14 +102,23 @@ class OCRFinder:
         try:
             import pytesseract  # type: ignore
             self._pytesseract = pytesseract
-            self.available = True
-        except Exception:
+            try:
+                self.version = str(pytesseract.get_tesseract_version())
+                self.available = True
+                self.error = ""
+            except Exception as e:
+                self.version = ""
+                self.available = False
+                self.error = f"Tesseract binary unavailable/configuration error: {e}"
+        except Exception as e:
             self._pytesseract = None
+            self.version = ""
             self.available = False
+            self.error = f"pytesseract unavailable: {e}"
 
     def find_text(self, image, text: str) -> dict:
         if not self.available:
-            return {"success": False, "error": "OCR unavailable: install/configure pytesseract"}
+            return {"success": False, "error": self.error or "OCR unavailable: install/configure pytesseract"}
         if not text:
             return {"success": False, "error": "Empty OCR query"}
         try:

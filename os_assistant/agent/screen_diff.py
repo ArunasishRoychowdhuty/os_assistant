@@ -1,75 +1,66 @@
-"""
-Changed-region tracker for live screen frames.
-
-This avoids expensive full-screen OCR/vision when only a small area changed.
-"""
 from __future__ import annotations
-
 import base64
 import hashlib
 import io
+import logging
 
+logger = logging.getLogger(__name__)
+
+# Try to load the Rust optimized version
+try:
+    from agent.screen_diff_rs import ScreenDiffTracker as RustScreenDiffTracker
+    HAS_RUST_DIFF = True
+    logger.info("Successfully loaded Rust ScreenDiffTracker")
+except ImportError as e:
+    HAS_RUST_DIFF = False
+    logger.warning(f"Could not load Rust ScreenDiffTracker: {e}. Falling back to slow hash_only mode.")
 
 class ScreenDiffTracker:
+    """Wrapper that uses the Rust native ScreenDiffTracker if available."""
+    
     def __init__(self, grid_size: int = 32, threshold: int = 12):
         self.grid_size = grid_size
-        self.threshold = threshold
-        self._last_cells: dict[tuple[int, int], str] = {}
-        self._last_size: tuple[int, int] = (0, 0)
+        self._last_hash = None
+        
+        if HAS_RUST_DIFF:
+            self._rs_tracker = RustScreenDiffTracker(grid_size)
+        else:
+            self._rs_tracker = None
 
     def update_from_screenshot(self, screenshot: dict) -> dict:
-        try:
-            image = self._load_image(screenshot)
-            if image is None:
+        """
+        Calculates screen diff. If Rust module is available, uses it for
+        lightning fast parallel pixel hashing.
+        """
+        if self._rs_tracker:
+            try:
+                from PIL import Image
+                
+                # Decode base64 to image
+                data = screenshot.get("base64")
+                if not data:
+                    return {"success": False, "changed": True, "error": "No base64 data", "regions": []}
+                    
+                raw = base64.b64decode(data)
+                img = Image.open(io.BytesIO(raw)).convert("RGB")
+                
+                # Pass raw RGB bytes to Rust
+                width, height = img.size
+                rgb_bytes = img.tobytes()
+                
+                # Rust does parallel cell hashing instantly
+                return self._rs_tracker.update_from_rgb(rgb_bytes, width, height)
+                
+            except Exception as e:
+                logger.error(f"Rust diff failed: {e}")
                 return self._hash_only(screenshot)
-            return self.update_from_image(image)
-        except Exception as e:
-            return {"success": False, "error": str(e), "changed": True, "regions": []}
-
-    def update_from_image(self, image) -> dict:
-        width, height = image.size
-        cell_w = max(1, width // self.grid_size)
-        cell_h = max(1, height // self.grid_size)
-        cells = {}
-        changed_boxes = []
-        for y in range(0, height, cell_h):
-            for x in range(0, width, cell_w):
-                crop = image.crop((x, y, min(width, x + cell_w), min(height, y + cell_h)))
-                digest = hashlib.md5(crop.tobytes()).hexdigest()
-                key = (x // cell_w, y // cell_h)
-                cells[key] = digest
-                if self._last_cells and self._last_cells.get(key) != digest:
-                    changed_boxes.append((x, y, min(width, x + cell_w), min(height, y + cell_h)))
-        regions = self._merge_boxes(changed_boxes)
-        changed = bool(regions) or self._last_size != (width, height)
-        self._last_cells = cells
-        self._last_size = (width, height)
-        return {"success": True, "changed": changed, "regions": regions, "size": {"width": width, "height": height}}
+        else:
+            return self._hash_only(screenshot)
 
     def _hash_only(self, screenshot: dict) -> dict:
+        """Fallback when PIL or Rust is unavailable."""
+        import hashlib
         digest = hashlib.md5((screenshot.get("base64") or "").encode("utf-8")).hexdigest()
-        changed = self._last_cells.get((0, 0)) != digest
-        self._last_cells = {(0, 0): digest}
+        changed = self._last_hash != digest
+        self._last_hash = digest
         return {"success": True, "changed": changed, "regions": [], "method": "hash_only"}
-
-    @staticmethod
-    def _load_image(screenshot: dict):
-        try:
-            from PIL import Image
-        except Exception:
-            return None
-        data = screenshot.get("base64")
-        if not data:
-            return None
-        raw = base64.b64decode(data)
-        return Image.open(io.BytesIO(raw)).convert("RGB")
-
-    @staticmethod
-    def _merge_boxes(boxes: list[tuple[int, int, int, int]]) -> list[dict]:
-        if not boxes:
-            return []
-        left = min(b[0] for b in boxes)
-        top = min(b[1] for b in boxes)
-        right = max(b[2] for b in boxes)
-        bottom = max(b[3] for b in boxes)
-        return [{"left": left, "top": top, "right": right, "bottom": bottom}]

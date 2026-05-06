@@ -84,125 +84,58 @@ VK_MAP = {
 }
 
 class NativeWin32:
-    @staticmethod
-    def _send_input(inputs):
-        nInputs = len(inputs)
-        LPINPUT = Input * nInputs
-        pInputs = LPINPUT(*inputs)
-        cbSize = ctypes.c_int(ctypes.sizeof(Input))
-        result = user32.SendInput(nInputs, pInputs, cbSize)
-        if result == 0:
-            import ctypes
-            error = ctypes.GetLastError()
-            raise RuntimeError(f"Native Win32 SendInput blocked (UIPI/Anti-Cheat) or failed. Error code: {error}")
-        return result
-
+    """Wrapper that passes through to the fast Rust native engine."""
+    
     @staticmethod
     def get_mouse_pos():
-        if ENGINE and ENGINE.available:
-            return ENGINE.get_mouse_pos()
-        class POINT(ctypes.Structure):
-            _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
-        pt = POINT()
-        user32.GetCursorPos(ctypes.byref(pt))
-        return pt.x, pt.y
+        if ENGINE: return ENGINE.get_mouse_pos()
+        return (0, 0)
 
     @staticmethod
     def mouse_move(x, y):
-        if ENGINE and ENGINE.available:
-            ENGINE.mouse_move(x, y)
-            return
-        # Convert to absolute coordinates (0 to 65535)
-        screen_width = user32.GetSystemMetrics(0)
-        screen_height = user32.GetSystemMetrics(1)
-        abs_x = int(x * 65535 / screen_width)
-        abs_y = int(y * 65535 / screen_height)
-        
-        extra = ctypes.c_ulong(0)
-        ii_ = Input_I()
-        ii_.mi = MouseInput(abs_x, abs_y, 0, MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE, 0, ctypes.pointer(extra))
-        x_in = Input(ctypes.c_ulong(INPUT_MOUSE), ii_)
-        NativeWin32._send_input([x_in])
+        if ENGINE: ENGINE.mouse_move(x, y)
 
     @staticmethod
     def mouse_down(button="left"):
-        if ENGINE and ENGINE.available:
-            ENGINE.mouse_down(button)
-            return
-        flag = MOUSEEVENTF_LEFTDOWN if button == "left" else MOUSEEVENTF_RIGHTDOWN
-        extra = ctypes.c_ulong(0)
-        ii_ = Input_I()
-        ii_.mi = MouseInput(0, 0, 0, flag, 0, ctypes.pointer(extra))
-        NativeWin32._send_input([Input(ctypes.c_ulong(INPUT_MOUSE), ii_)])
+        if ENGINE: ENGINE.mouse_down(button)
 
     @staticmethod
     def mouse_up(button="left"):
-        if ENGINE and ENGINE.available:
-            ENGINE.mouse_up(button)
-            return
-        flag = MOUSEEVENTF_LEFTUP if button == "left" else MOUSEEVENTF_RIGHTUP
-        extra = ctypes.c_ulong(0)
-        ii_ = Input_I()
-        ii_.mi = MouseInput(0, 0, 0, flag, 0, ctypes.pointer(extra))
-        NativeWin32._send_input([Input(ctypes.c_ulong(INPUT_MOUSE), ii_)])
+        if ENGINE: ENGINE.mouse_up(button)
 
     @staticmethod
     def mouse_click(button="left"):
-        if ENGINE and ENGINE.available:
-            ENGINE.mouse_click(button)
-            return
-        NativeWin32.mouse_down(button)
-        time.sleep(0.02)
-        NativeWin32.mouse_up(button)
+        if ENGINE: ENGINE.mouse_click(button)
 
     @staticmethod
     def mouse_scroll(clicks):
-        if ENGINE and ENGINE.available:
-            ENGINE.mouse_scroll(clicks)
-            return
-        # positive for up, negative for down. 1 click = 120 units
-        extra = ctypes.c_ulong(0)
-        ii_ = Input_I()
-        ii_.mi = MouseInput(0, 0, clicks * 120, MOUSEEVENTF_WHEEL, 0, ctypes.pointer(extra))
-        NativeWin32._send_input([Input(ctypes.c_ulong(INPUT_MOUSE), ii_)])
+        if ENGINE: ENGINE.mouse_scroll(clicks)
 
     @staticmethod
     def _get_vk(key_name):
         vk = VK_MAP.get(key_name.lower())
-        if not vk:
-            if len(key_name) == 1:
-                vk = user32.VkKeyScanW(ord(key_name)) & 0xFF
+        if not vk and len(key_name) == 1:
+            try:
+                import ctypes
+                vk = ctypes.windll.user32.VkKeyScanW(ord(key_name)) & 0xFF
+            except:
+                pass
         return vk
 
     @staticmethod
     def key_down(key_name):
         vk = NativeWin32._get_vk(key_name)
-        if not vk: return
-        if ENGINE and ENGINE.available:
-            ENGINE.key_event(vk, True)
-            return
-        extra = ctypes.c_ulong(0)
-        ii_ = Input_I()
-        ii_.ki = KeyBdInput(vk, 0, KEYEVENTF_KEYDOWN, 0, ctypes.pointer(extra))
-        NativeWin32._send_input([Input(ctypes.c_ulong(INPUT_KEYBOARD), ii_)])
+        if vk and ENGINE: ENGINE.key_down(vk)
 
     @staticmethod
     def key_up(key_name):
         vk = NativeWin32._get_vk(key_name)
-        if not vk: return
-        if ENGINE and ENGINE.available:
-            ENGINE.key_event(vk, False)
-            return
-        extra = ctypes.c_ulong(0)
-        ii_ = Input_I()
-        ii_.ki = KeyBdInput(vk, 0, KEYEVENTF_KEYUP, 0, ctypes.pointer(extra))
-        NativeWin32._send_input([Input(ctypes.c_ulong(INPUT_KEYBOARD), ii_)])
+        if vk and ENGINE: ENGINE.key_up(vk)
 
     @staticmethod
     def press_key(key_name):
-        NativeWin32.key_down(key_name)
-        time.sleep(0.01)
-        NativeWin32.key_up(key_name)
+        vk = NativeWin32._get_vk(key_name)
+        if vk and ENGINE: ENGINE.press_key(vk)
 
     @staticmethod
     def hotkey(*keys):
@@ -215,21 +148,4 @@ class NativeWin32:
 
     @staticmethod
     def type_unicode(text, interval=0.0):
-        """Sends Unicode characters directly. Bypasses layout issues."""
-        if ENGINE and ENGINE.available:
-            ENGINE.type_unicode(text, int(interval * 1000))
-            return
-        extra = ctypes.c_ulong(0)
-        for char in text:
-            inputs = []
-            # Key down
-            ii_d = Input_I()
-            ii_d.ki = KeyBdInput(0, ord(char), KEYEVENTF_UNICODE, 0, ctypes.pointer(extra))
-            inputs.append(Input(ctypes.c_ulong(INPUT_KEYBOARD), ii_d))
-            # Key up
-            ii_u = Input_I()
-            ii_u.ki = KeyBdInput(0, ord(char), KEYEVENTF_UNICODE | KEYEVENTF_KEYUP, 0, ctypes.pointer(extra))
-            inputs.append(Input(ctypes.c_ulong(INPUT_KEYBOARD), ii_u))
-            NativeWin32._send_input(inputs)
-            if interval > 0:
-                time.sleep(interval)
+        if ENGINE: ENGINE.type_unicode(text, int(interval * 1000))

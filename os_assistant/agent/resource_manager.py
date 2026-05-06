@@ -53,9 +53,10 @@ class AdaptiveResourceManager:
     Dynamically adjusts the polling intervals of background monitors.
     """
 
-    def __init__(self, screen_capture=None, hardware_controller=None):
+    def __init__(self, screen_capture=None, hardware_controller=None, proactive_monitor=None):
         self._screen = screen_capture
         self._hw = hardware_controller
+        self._proactive = proactive_monitor
         self._current_profile = "performance"
         self._stop = False
         self._thread = None
@@ -119,6 +120,14 @@ class AdaptiveResourceManager:
 
         if target != self._current_profile:
             self._apply_profile(target, cpu, ram, heavy_app)
+
+        # ── Unified Background Polling ──
+        # Instead of multiple threads running loops, the ARM ticks the Proactive Monitor
+        if self._proactive:
+            try:
+                self._proactive.poll()
+            except Exception as e:
+                logger.error(f"[ARM] Proactive poll error: {e}")
 
     def _detect_heavy_app(self) -> bool:
         """Return True if a high-demand application is running."""

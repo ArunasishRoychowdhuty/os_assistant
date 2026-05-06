@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QTextEdit, QScrollArea, QFrame, QSplitter,
     QSlider, QSystemTrayIcon, QMenu, QDialog, QDialogButtonBox,
+    QStyle,
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QSize, QThread
 from PyQt6.QtGui import QPixmap, QImage, QIcon, QKeySequence, QShortcut, QFont
@@ -45,8 +46,8 @@ class AgentTaskWorker(QThread):
 
     def run(self):
         result = self.agent.execute_task(self.task, live_mode=self.live_mode)
-        summary = result.get("summary", "Task completed")
-        self.signals.task_done.emit(summary)
+        if not result.get("success"):
+            self.signals.new_message.emit("error", result.get("error", "Task failed to start"), 0)
 
 class ListenWorker(QThread):
     def __init__(self, agent, signals, app_ref):
@@ -63,7 +64,7 @@ class ListenWorker(QThread):
             # Use QTimer to delay the send task back on the main thread
             QTimer.singleShot(500, lambda: self.app_ref._send_task(task))
         else:
-            self.signals.status_changed.emit("Ready", "Awaiting command")
+            self.signals.status_changed.emit("Ready", "Awaiting your command")
             if res.get("error"):
                 self.signals.new_message.emit("error", res["error"], 0)
             else:
@@ -107,7 +108,7 @@ class ConfirmDialog(QDialog):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("OS Assistant")
+        self.setWindowTitle("Aura")
         self.setMinimumSize(1100, 700)
         self.resize(1280, 800)
 
@@ -131,7 +132,8 @@ class MainWindow(QMainWindow):
 
         self._build_ui()
         self.setStyleSheet(DARK_THEME)
-        self._set_status("Ready", "Awaiting command")
+        self.setWindowIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon))
+        self._set_status("Ready", "Awaiting your command")
 
         # Start wake word listener in background
         self.agent.hardware.start_wake_word_listener(
@@ -155,10 +157,10 @@ class MainWindow(QMainWindow):
         sb_layout.setContentsMargins(12, 16, 12, 16)
         sb_layout.setSpacing(6)
 
-        logo = QLabel("⬡ OS Assistant")
+        logo = QLabel("AURA")
         logo.setObjectName("logo-text")
         sb_layout.addWidget(logo)
-        sub = QLabel("Native Desktop • PyQt6")
+        sub = QLabel("Jarvis-style Desktop AI")
         sub.setObjectName("logo-sub")
         sb_layout.addWidget(sub)
         sb_layout.addSpacing(20)
@@ -189,7 +191,7 @@ class MainWindow(QMainWindow):
         self.status_label = QLabel("Ready")
         self.status_label.setObjectName("statusLabel")
         sv.addWidget(self.status_label)
-        self.status_detail = QLabel("Awaiting command")
+        self.status_detail = QLabel("Awaiting your command")
         self.status_detail.setObjectName("statusDetail")
         sv.addWidget(self.status_detail)
         sl.addLayout(sv)
@@ -234,11 +236,22 @@ class MainWindow(QMainWindow):
 
         # Header
         header = QHBoxLayout()
-        title = QLabel("Command Center")
+        title = QLabel("Aura Command")
         title.setProperty("class", "panel-title")
         header.addWidget(title)
         header.addStretch()
         layout.addLayout(header)
+
+        # Operational status strip
+        status_strip = QHBoxLayout()
+        status_strip.setSpacing(10)
+        for label, value in [
+            ("Brain", Config.AI_PROVIDER.upper()),
+            ("Mode", "Desktop Control"),
+            ("Memory", "Local + Long-term"),
+        ]:
+            status_strip.addWidget(self._build_status_tile(label, value))
+        layout.addLayout(status_strip)
 
         # Messages scroll
         self.chat_scroll = QScrollArea()
@@ -252,8 +265,8 @@ class MainWindow(QMainWindow):
         self.chat_layout.setSpacing(8)
 
         # Welcome
-        welcome = QLabel("💬  Tell me what to do on your computer.\n"
-                         "I'll take control and complete the task.")
+        welcome = QLabel("Tell me what to do on your computer.\n"
+                         "I will inspect, act, verify, and report.")
         welcome.setAlignment(Qt.AlignmentFlag.AlignCenter)
         welcome.setStyleSheet("color: #6b7280; padding: 40px; font-size: 14px;")
         self.welcome_label = welcome
@@ -290,7 +303,7 @@ class MainWindow(QMainWindow):
         input_row = QHBoxLayout()
         self.task_input = QTextEdit()
         self.task_input.setObjectName("taskInput")
-        self.task_input.setPlaceholderText("Tell me what to do... (e.g., 'Open Chrome and search for Python tutorials')")
+        self.task_input.setPlaceholderText("Give Aura a command... English, Bangla, or Hindi")
         self.task_input.setMaximumHeight(50)
         self.task_input.installEventFilter(self)
         input_row.addWidget(self.task_input, 1)
@@ -325,6 +338,23 @@ class MainWindow(QMainWindow):
         return panel
 
     # ── Screen Panel ────────────────────────────────────────
+    def _build_status_tile(self, label, value):
+        tile = QFrame()
+        tile.setProperty("class", "status-tile")
+        tl = QVBoxLayout(tile)
+        tl.setContentsMargins(12, 10, 12, 10)
+        tl.setSpacing(2)
+
+        label_widget = QLabel(label)
+        label_widget.setProperty("class", "tile-label")
+        tl.addWidget(label_widget)
+
+        value_widget = QLabel(value)
+        value_widget.setProperty("class", "tile-value")
+        value_widget.setWordWrap(True)
+        tl.addWidget(value_widget)
+        return tile
+
     def _build_screen_panel(self):
         panel = QWidget()
         layout = QVBoxLayout(panel)
@@ -619,7 +649,7 @@ class MainWindow(QMainWindow):
             gender_row.addWidget(btn)
         btn_test = QPushButton("🔊 Test")
         btn_test.setProperty("class", "ctrl-btn")
-        btn_test.clicked.connect(lambda: self.agent.tts.speak("Hello! I am your OS Assistant. How can I help?"))
+        btn_test.clicked.connect(lambda: self.agent.tts.speak("Hello. I am Aura, your Jarvis style desktop assistant. How can I help?"))
         gender_row.addWidget(btn_test)
         gender_row.addStretch()
         layout.addLayout(gender_row)
@@ -745,6 +775,12 @@ class MainWindow(QMainWindow):
     def _agent_event(self, event, data):
         if event == "thought":
             self.signals.new_message.emit("thought", data.get("thought", ""), data.get("step", 0))
+        elif event == "llm_response":
+            self.signals.new_message.emit("thought", data.get("text", ""), data.get("step", 0))
+        elif event == "history_update":
+            role = data.get("role", "thought")
+            msg_type = "thought" if role == "ai" else "user" if role == "user" else "thought"
+            self.signals.new_message.emit(msg_type, data.get("text", ""), data.get("step", 0))
         elif event == "action":
             import json
             self.signals.new_message.emit("action", json.dumps(data.get("action", {}), indent=2), data.get("step", 0))
@@ -758,10 +794,17 @@ class MainWindow(QMainWindow):
             self.signals.new_message.emit("error", f"Blocked: {data.get('reason', '')}", data.get("step", 0))
         elif event == "need_confirmation":
             self.signals.confirm_needed.emit(data.get("message", "Approve this action?"))
+        elif event == "task_started":
+            self.signals.status_changed.emit("Working", f"Executing: {data.get('task', '')[:40]}...")
         elif event == "task_done":
-            self.signals.new_message.emit("success", data.get("summary", "Done!"), 0)
+            self.signals.task_done.emit(data.get("summary", "Done!"))
         elif event == "task_failed":
             self.signals.new_message.emit("error", data.get("summary", "Failed"), 0)
+            self.signals.status_changed.emit("Ready", "Awaiting your command")
+            self.ctrl_widget.hide()
+        elif event == "task_stopped":
+            self.signals.status_changed.emit("Ready", "Awaiting your command")
+            self.ctrl_widget.hide()
         elif event == "error":
             self.signals.new_message.emit("error", data.get("message", "Error"), 0)
         elif event == "info":
@@ -811,7 +854,7 @@ class MainWindow(QMainWindow):
 
     def _on_task_done(self, summary):
         self.ctrl_widget.hide()
-        self._set_status("Ready", "Awaiting command")
+        self._set_status("Ready", "Awaiting your command")
         self._add_message("success", summary, 0)
 
     # ── Live Stream ─────────────────────────────────────────
@@ -842,7 +885,8 @@ class MainWindow(QMainWindow):
         try:
             import io
             from PIL import Image
-            raw = self.sc._sct.grab(self.sc._sct.monitors[0])
+            sct = self.sc._get_sct()
+            raw = sct.grab(sct.monitors[0])
             img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
             self.stream_orig_w, self.stream_orig_h = raw.width, raw.height
             lw, lh = self.screen_label.width(), self.screen_label.height()
@@ -925,7 +969,8 @@ class MainWindow(QMainWindow):
         if not QSystemTrayIcon.isSystemTrayAvailable():
             return
         self.tray = QSystemTrayIcon(self)
-        self.tray.setToolTip("OS Assistant")
+        self.tray.setIcon(self.windowIcon())
+        self.tray.setToolTip("Aura")
         menu = QMenu()
         show_action = menu.addAction("Show")
         show_action.triggered.connect(self.showNormal)
@@ -939,7 +984,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         if hasattr(self, 'tray') and self.tray.isVisible():
             self.hide()
-            self.tray.showMessage("OS Assistant", "Running in background", QSystemTrayIcon.MessageIcon.Information, 2000)
+            self.tray.showMessage("Aura", "Running in background", QSystemTrayIcon.MessageIcon.Information, 2000)
             event.ignore()
         else:
             event.accept()
@@ -948,8 +993,9 @@ class MainWindow(QMainWindow):
 # ── Entry Point ─────────────────────────────────────────────
 def main():
     app = QApplication(sys.argv)
-    app.setApplicationName("OS Assistant")
+    app.setApplicationName("Aura")
     app.setStyle("Fusion")
+    app.setWindowIcon(app.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon))
 
     window = MainWindow()
     window.setup_tray(app)

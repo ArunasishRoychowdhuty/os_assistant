@@ -16,6 +16,10 @@ import wave
 import logging
 import tempfile
 import threading
+import json
+import subprocess
+import ctypes
+from ctypes import wintypes
 from datetime import datetime
 
 import psutil
@@ -112,7 +116,7 @@ class HardwareController:
         if not HAS_SR:
             if HAS_WHISPER:
                 return self._listen_whisper(duration)
-            return {"success": False, "error": "No STT engine available"}
+            return self._listen_windows_speech(duration, language)
         try:
             recognizer = sr.Recognizer()
             with sr.Microphone() as source:
@@ -123,7 +127,9 @@ class HardwareController:
                 return {"action": "listen", "success": True, "text": text,
                         "engine": "google", "language": language}
             except Exception:
-                # Google failed → fallback to Whisper
+                win_result = self._listen_windows_speech(duration, language)
+                if win_result.get("success"):
+                    return win_result
                 if HAS_WHISPER:
                     return self._listen_whisper(duration, audio_data=audio)
                 raise
@@ -131,6 +137,49 @@ class HardwareController:
             return {"action": "listen", "success": True, "text": "", "note": "No speech detected"}
         except sr.UnknownValueError:
             return {"action": "listen", "success": True, "text": "", "note": "Could not understand audio"}
+        except Exception as e:
+            win_result = self._listen_windows_speech(duration, language)
+            if win_result.get("success"):
+                return win_result
+            return {"action": "listen", "success": False, "error": str(e)}
+
+    def _listen_windows_speech(self, duration: float = 5.0, language: str = "en-US") -> dict:
+        """Speech-to-text through Windows' built-in System.Speech recognizer."""
+        if os.name != "nt":
+            return {"action": "listen", "success": False, "error": "Windows speech is unavailable on this OS"}
+        seconds = max(1.0, min(float(duration), 30.0))
+        ps_script = r"""
+param([double]$Seconds, [string]$Language)
+$ErrorActionPreference = "Stop"
+Add-Type -AssemblyName System.Speech
+try {
+    $culture = [System.Globalization.CultureInfo]::GetCultureInfo($Language)
+    $recognizer = New-Object System.Speech.Recognition.SpeechRecognitionEngine($culture)
+} catch {
+    $recognizer = New-Object System.Speech.Recognition.SpeechRecognitionEngine
+}
+$recognizer.SetInputToDefaultAudioDevice()
+$recognizer.LoadGrammar((New-Object System.Speech.Recognition.DictationGrammar))
+$result = $recognizer.Recognize([TimeSpan]::FromSeconds($Seconds))
+if ($null -eq $result) {
+    @{ success = $true; text = ""; note = "No speech detected"; engine = "windows_system_speech" } | ConvertTo-Json -Compress
+} else {
+    @{ success = $true; text = $result.Text; confidence = $result.Confidence; engine = "windows_system_speech" } | ConvertTo-Json -Compress
+}
+$recognizer.Dispose()
+"""
+        try:
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_script, seconds, language],
+                capture_output=True,
+                text=True,
+                timeout=seconds + 8,
+            )
+            if result.returncode != 0:
+                return {"action": "listen", "success": False, "error": result.stderr.strip() or "Windows speech failed"}
+            payload = json.loads(result.stdout.strip() or "{}")
+            payload.update({"action": "listen", "language": language})
+            return payload
         except Exception as e:
             return {"action": "listen", "success": False, "error": str(e)}
 
@@ -244,7 +293,7 @@ class HardwareController:
     def record_audio(self, duration: float = 5.0, sample_rate: int = 44100) -> dict:
         """Record audio from microphone and return as base64 WAV."""
         if not HAS_AUDIO:
-            return {"success": False, "error": "sounddevice not installed"}
+            return self._record_audio_winmm(duration=duration, sample_rate=sample_rate)
         try:
             recording = sd.rec(int(duration * sample_rate), samplerate=sample_rate,
                                channels=1, dtype='int16')
@@ -260,6 +309,85 @@ class HardwareController:
                     "base64_wav": b64[:100] + "...", "size_bytes": len(buf.getvalue())}
         except Exception as e:
             return {"action": "record_audio", "success": False, "error": str(e)}
+
+    def _record_audio_winmm(self, duration: float = 5.0, sample_rate: int = 44100) -> dict:
+        """Record from the default Windows microphone using WinMM; no PyAudio needed."""
+        if os.name != "nt":
+            return {"action": "record_audio", "success": False, "error": "WinMM recording is unavailable on this OS"}
+
+        class WAVEFORMATEX(ctypes.Structure):
+            _fields_ = [
+                ("wFormatTag", wintypes.WORD),
+                ("nChannels", wintypes.WORD),
+                ("nSamplesPerSec", wintypes.DWORD),
+                ("nAvgBytesPerSec", wintypes.DWORD),
+                ("nBlockAlign", wintypes.WORD),
+                ("wBitsPerSample", wintypes.WORD),
+                ("cbSize", wintypes.WORD),
+            ]
+
+        class WAVEHDR(ctypes.Structure):
+            _fields_ = [
+                ("lpData", ctypes.c_void_p),
+                ("dwBufferLength", wintypes.DWORD),
+                ("dwBytesRecorded", wintypes.DWORD),
+                ("dwUser", ctypes.c_void_p),
+                ("dwFlags", wintypes.DWORD),
+                ("dwLoops", wintypes.DWORD),
+                ("lpNext", ctypes.c_void_p),
+                ("reserved", ctypes.c_void_p),
+            ]
+
+        winmm = ctypes.WinDLL("winmm")
+        handle = ctypes.c_void_p()
+        channels = 1
+        bits = 16
+        block_align = channels * bits // 8
+        sample_rate = int(sample_rate)
+        duration = max(0.2, min(float(duration), 60.0))
+        byte_count = int(duration * sample_rate * block_align)
+        audio_buffer = ctypes.create_string_buffer(byte_count)
+        fmt = WAVEFORMATEX(1, channels, sample_rate, sample_rate * block_align, block_align, bits, 0)
+        header = WAVEHDR(ctypes.cast(audio_buffer, ctypes.c_void_p), byte_count, 0, None, 0, 0, None, None)
+
+        def mm_call(code, name):
+            if code != 0:
+                raise RuntimeError(f"{name} failed with MMRESULT {code}")
+
+        try:
+            mm_call(winmm.waveInOpen(ctypes.byref(handle), 0xFFFFFFFF, ctypes.byref(fmt), 0, 0, 0), "waveInOpen")
+            mm_call(winmm.waveInPrepareHeader(handle, ctypes.byref(header), ctypes.sizeof(header)), "waveInPrepareHeader")
+            mm_call(winmm.waveInAddBuffer(handle, ctypes.byref(header), ctypes.sizeof(header)), "waveInAddBuffer")
+            mm_call(winmm.waveInStart(handle), "waveInStart")
+            time.sleep(duration)
+            winmm.waveInStop(handle)
+            winmm.waveInReset(handle)
+            data = audio_buffer.raw[: header.dwBytesRecorded or byte_count]
+        except Exception as e:
+            return {"action": "record_audio", "success": False, "error": str(e)}
+        finally:
+            try:
+                if handle:
+                    winmm.waveInUnprepareHeader(handle, ctypes.byref(header), ctypes.sizeof(header))
+                    winmm.waveInClose(handle)
+            except Exception:
+                pass
+
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wf:
+            wf.setnchannels(channels)
+            wf.setsampwidth(bits // 8)
+            wf.setframerate(sample_rate)
+            wf.writeframes(data)
+        b64 = base64.b64encode(buf.getvalue()).decode()
+        return {
+            "action": "record_audio",
+            "success": True,
+            "duration": duration,
+            "engine": "windows_winmm",
+            "base64_wav": b64[:100] + "...",
+            "size_bytes": len(buf.getvalue()),
+        }
 
     # ═══════════════════════════════════════════════════════
     # 📷 CAMERA — Capture Photo
@@ -489,8 +617,8 @@ class HardwareController:
     def get_capabilities(self) -> dict:
         """Report what hardware tools are available."""
         return {
-            "microphone": HAS_SR,
-            "audio_record": HAS_AUDIO,
+            "microphone": HAS_SR or os.name == "nt",
+            "audio_record": HAS_AUDIO or os.name == "nt",
             "camera": HAS_CV2,
             "volume_control": self._volume_interface is not None,
             "system_info": True,

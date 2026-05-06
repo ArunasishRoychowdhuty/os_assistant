@@ -1,7 +1,7 @@
 """
 AI Vision Module
 Sends screenshots to AI vision models and parses structured action responses.
-Supports OpenAI (GPT-4o), Anthropic (Claude), and Google Gemini.
+Supports OpenAI, OpenAI-compatible NVIDIA NIM, Anthropic, and Google Gemini.
 
 Includes timeout (30s) and retry with exponential backoff on all API calls.
 """
@@ -13,13 +13,14 @@ from config import Config
 
 log = logging.getLogger(__name__)
 
-API_TIMEOUT = 30  # seconds
+API_TIMEOUT = 120  # seconds (increased for heavy DeepSeek models)
 MAX_RETRIES = 3
 
 # ─── System Prompt ──────────────────────────────────────────
 
-SYSTEM_PROMPT = """You are an advanced OS Assistant AI agent that controls a computer.
-You can see the screen via screenshots and must decide what actions to take.
+SYSTEM_PROMPT = """You are Aura, a Jarvis-style autonomous OS assistant and software engineer.
+You control the user's computer through structured actions, inspect screenshots carefully, and execute tasks with a calm, concise, action-first operating style.
+You can understand English, Bengali, and Hindi. Match the user's language naturally in your thoughts and summaries when possible.
 
 AVAILABLE ACTIONS (return as JSON):
 - {"action": "list_tools"}  (List native tool categories and available tool names)
@@ -39,10 +40,14 @@ AVAILABLE ACTIONS (return as JSON):
 - {"action": "browser_dom_type", "selector": "<css_selector>", "text": "<string>"}  (Type into browser DOM element via DevTools)
 - {"action": "recover_observe"}  (Re-observe system/UI state after a failed or uncertain action)
 - {"action": "perception_status"}  (Read fast live perception status: active window, cached targets, recent events)
+- {"action": "capture_status"}  (Read live screen capture backend status: DXcam/MSS availability)
+- {"action": "ocr_status"}  (Check whether OCR fallback is available/configured)
 - {"action": "drain_events", "limit": 20}  (Consume recent fast perception events)
 - {"action": "target_cache_lookup", "query": "<visible_control_name>"}  (Fast target lookup from UIA cache)
 - {"action": "uia_click", "name": "<element_name>"}  (Click by element name instead of X/Y coordinates)
 - {"action": "uia_type", "name": "<element_name>", "text": "<string>"}  (Type into element by name)
+- {"action": "smart_click", "query": "<visible_text_or_control_name>", "x": <optional_int>, "y": <optional_int>}  (Safe click chain: UIAutomation -> target cache -> OCR/target resolver -> coordinates as last fallback)
+- {"action": "smart_type", "query": "<field_name_or_visible_text>", "value": "<text>", "x": <optional_int>, "y": <optional_int>}  (Safe focus/type chain)
 - {"action": "ocr_click", "text": "<visible_text>"}  (OCR fallback click by visible text)
 - {"action": "ocr_type", "text": "<visible_text>", "value": "<string>"}  (OCR fallback focus and type)
 - {"action": "click", "x": <int>, "y": <int>, "button": "left"|"right"}
@@ -61,12 +66,23 @@ AVAILABLE ACTIONS (return as JSON):
 - {"action": "switch_window"}
 - {"action": "search_start", "query": "<search_text>"}
 - {"action": "wait", "seconds": <float>}
+- {"action": "wait_for_target", "name": "<visible_text_or_control_name>", "timeout": <float>}
+- {"action": "wait_for_window", "title": "<window_title_or_app_name>", "timeout": <float>}
+- {"action": "wait_until_screen_stable", "timeout": <float>, "stable_for": <float>}  (Wait for loading/spinners/transitions to settle)
+- {"action": "verify_recipient", "recipient": "<contact_or_recipient_name>"}  (Verify a messaging/email recipient is selected before sending)
 - {"action": "sequence", "actions": [{"action": "...", ...}, {"action": "...", ...}]}
+FILE SYSTEM (Direct file access for unrestricted laptop control):
+- {"action": "read_file", "path": "<file_path>"} (Read file contents)
+- {"action": "write_file", "path": "<file_path>", "content": "<text>"} (Create or overwrite a file)
+- {"action": "search_files", "directory": "<dir_path>", "pattern": "*.txt"} (Search for files)
+- {"action": "list_directory", "path": "<dir_path>"} (List contents of a directory)
+- {"action": "file_info", "path": "<file_path>"} (Get file metadata)
 HOST CONTROL (Root/Admin privileges via PowerShell):
 - {"action": "run_powershell", "script": "<powershell_script>", "timeout": 30}  (Execute WMI, Registry, Services, or OS-level commands)
 SELF-EVOLVING UPGRADES (Write Python plugins to give yourself new powers!):
-- {"action": "create_skill", "name": "<skill_name>", "code": "def run(**kwargs):\n    return 'success'"}
-- {"action": "execute_skill", "name": "<skill_name>", "params": {"key": "value"}}
+- {"action": "propose_skill", "name": "<skill_name>", "code": "def run(**kwargs):\n    return 'success'"} (Step 1: Write and propose)
+- {"action": "activate_skill", "name": "<skill_name>"} (Step 2: Activate proposed skill)
+- {"action": "execute_skill", "name": "<skill_name>", "params": {"key": "value"}} (Step 3: Execute)
 HARDWARE TOOLS (you can use PC hardware directly):
 - {"action": "listen", "duration": <float>, "language": "en-US"}  (use microphone, speech-to-text)
 - {"action": "record_audio", "duration": <float>}  (record mic audio)
@@ -83,16 +99,22 @@ COMPLETION AND PLANNING:
 - {"action": "error", "message": "<error_description>"}
 
 RULES:
-1. Analyze the screenshot carefully before acting
-2. Return EXACTLY ONE action per response (use 'sequence' if you need multiple rapid actions for games/macros)
-3. Always target the CENTER of UI elements
-4. If you need to type, click the input field first
-5. For destructive actions (delete, format), use "need_confirmation"
-6. When the task is complete, use "done"
-7. Be precise with coordinates - study the screenshot carefully
-8. If an element is not visible, scroll to find it
-9. Use keyboard shortcuts when they're faster
-10. Prefer native tools in this order: Windows/system tools, UIAutomation, OCR/vision target resolution, then coordinate mouse fallback
+1. Analyze the screenshot, system context, and previous results carefully before acting.
+2. Return EXACTLY ONE action per response; use "sequence" only for clearly related rapid actions.
+3. Operate autonomously: if an action fails, recover, inspect state, and choose the next practical fix.
+4. Keep thoughts brief, direct, and execution-focused, like a dedicated Jarvis-style assistant.
+5. Always target the CENTER of UI elements.
+6. If you need to type, click or focus the input field first.
+7. For destructive, irreversible, credential-related, payment, or privacy-sensitive actions, use "need_confirmation".
+8. When the task is complete, use "done" with a concise summary in the user's language when practical.
+9. Be precise with coordinates - study the screenshot carefully.
+10. If an element is not visible, scroll or use native discovery tools to find it.
+11. Use keyboard shortcuts when they are faster and safer.
+12. Prefer native tools in this strict order: Windows/system tools, browser DOM/native app tools, UIAutomation, target_cache_lookup, smart_click/smart_type, OCR/text target, then coordinate mouse fallback only when no structured target works.
+13. For GUI tasks like WhatsApp messaging: open the app with open_application/search_start first, wait_for_window, wait_until_screen_stable, use smart_click/smart_type to find the contact/search/message box, verify_recipient before pressing Send, and use coordinate clicks only as the final fallback.
+14. If a target may not be loaded yet, use wait_for_target, wait_for_window, or wait_until_screen_stable before clicking.
+15. If you return coordinates from the screenshot/image instead of physical screen coordinates, include coordinate_space="screenshot", screenshot_width, and screenshot_height so the executor can scale them.
+16. Do not expose secrets, API keys, passwords, or sensitive environment values in thoughts or summaries.
 
 RESPONSE FORMAT:
 First, provide a brief thought about what you see and what to do.
@@ -118,6 +140,12 @@ class VisionAI:
         if self.provider == "openai":
             from openai import OpenAI
             self._client = OpenAI(api_key=Config.OPENAI_API_KEY)
+        elif self.provider == "nvidia":
+            from openai import OpenAI
+            self._client = OpenAI(
+                base_url=Config.NVIDIA_BASE_URL,
+                api_key=Config.NVIDIA_API_KEY,
+            )
         elif self.provider == "anthropic":
             import anthropic
             self._client = anthropic.Anthropic(api_key=Config.ANTHROPIC_API_KEY)
@@ -147,13 +175,21 @@ class VisionAI:
 
         if text_only or not screenshot_b64:
             # Text-only call — cheaper, faster, used for lesson analysis
-            raw = self._call_text_only(prompt, conversation_history)
+            try:
+                raw = self._call_text_only(prompt, conversation_history)
+            except Exception as e:
+                raw = self._fallback_after_provider_error(e, None, prompt, conversation_history)
         elif self.provider == "openai":
             raw = self._call_openai(screenshot_b64, prompt, conversation_history)
+        elif self.provider == "nvidia":
+            raw = self._call_nvidia(screenshot_b64, prompt, conversation_history)
         elif self.provider == "anthropic":
             raw = self._call_anthropic(screenshot_b64, prompt, conversation_history)
         elif self.provider == "gemini":
-            raw = self._call_gemini(screenshot_b64, prompt, conversation_history)
+            try:
+                raw = self._call_gemini(screenshot_b64, prompt, conversation_history)
+            except Exception as e:
+                raw = self._fallback_after_provider_error(e, screenshot_b64, prompt, conversation_history)
         else:
             raise ValueError(f"Unknown provider: {self.provider}")
 
@@ -176,6 +212,19 @@ class VisionAI:
                     model="gpt-4o-mini",
                     messages=messages,
                     max_tokens=300,
+                )
+                return resp.choices[0].message.content or ""
+            elif self.provider == "nvidia":
+                messages = [{"role": "system", "content": "You are an AI agent analyzer."}]
+                if history:
+                    messages.extend(history)
+                messages.append({"role": "user", "content": prompt})
+                resp = self._client.chat.completions.create(
+                    model=Config.NVIDIA_MODEL,
+                    messages=messages,
+                    max_tokens=300,
+                    temperature=0.1,
+                    timeout=API_TIMEOUT,
                 )
                 return resp.choices[0].message.content or ""
             elif self.provider == "anthropic":
@@ -220,6 +269,72 @@ class VisionAI:
                 timeout=API_TIMEOUT,
             ).choices[0].message.content
         ))
+
+    def _call_nvidia(self, img_b64: str | None, prompt: str, history: list | None,
+                     client=None, model: str | None = None) -> str:
+        client = client or self._client
+        model = model or Config.NVIDIA_MODEL
+        
+        def _execute_call(include_image: bool):
+            messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+            if history:
+                messages.extend(history)
+                
+            if include_image and img_b64:
+                # Multimodal format
+                content = [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}
+                ]
+            else:
+                # Pure text format (required for DeepSeek)
+                content = prompt
+                
+            messages.append({"role": "user", "content": content})
+            return client.chat.completions.create(
+                model=model,
+                messages=messages,
+                max_tokens=1024,
+                temperature=0.1,
+                timeout=API_TIMEOUT,
+            ).choices[0].message.content
+
+        try:
+            # First try with image
+            return self._retry(lambda: _execute_call(include_image=True))
+        except Exception as e:
+            err_str = str(e).lower()
+            if "multimodal" in err_str or "image" in err_str or "400" in err_str:
+                import logging
+                logging.getLogger(__name__).warning(f"Model {model} rejected multimodal. Falling back to UIA text-only mode.")
+                return self._retry(lambda: _execute_call(include_image=False))
+            raise e
+
+    def _fallback_after_provider_error(self, error: Exception, img_b64: str | None,
+                                       prompt: str, history: list | None) -> str:
+        if not self._is_quota_or_rate_error(error):
+            raise error
+        if not Config.NVIDIA_API_KEY:
+            raise RuntimeError(
+                "Primary AI provider quota/rate limit hit, and NVIDIA_API_KEY is not set for fallback."
+            ) from error
+
+        from openai import OpenAI
+        client = OpenAI(base_url=Config.NVIDIA_BASE_URL, api_key=Config.NVIDIA_API_KEY)
+        models = [Config.NVIDIA_MODEL]
+        fallback_model = getattr(Config, "NVIDIA_FALLBACK_MODEL", "")
+        if fallback_model and fallback_model not in models:
+            models.append(fallback_model)
+
+        last_error = error
+        for model in models:
+            try:
+                return self._call_nvidia(img_b64, prompt, history, client=client, model=model)
+            except Exception as e:
+                last_error = e
+                if not self._is_quota_or_rate_error(e):
+                    break
+        raise RuntimeError(f"AI fallback failed after primary quota/rate limit: {last_error}") from last_error
 
     def _call_anthropic(self, img_b64: str, prompt: str, history: list | None) -> str:
         messages = []
@@ -294,11 +409,24 @@ class VisionAI:
                 return fn()
             except Exception as e:
                 last_error = e
+                if VisionAI._is_quota_or_rate_error(e):
+                    raise
                 wait = 2 ** attempt  # 2s, 4s, 8s
                 log.warning(f"AI API attempt {attempt}/{max_retries} failed: {e}. Retrying in {wait}s...")
                 if attempt < max_retries:
                     time.sleep(wait)
         raise RuntimeError(f"AI API failed after {max_retries} attempts: {last_error}")
+
+    @staticmethod
+    def _is_quota_or_rate_error(error: Exception) -> bool:
+        text = str(error).lower()
+        return (
+            "429" in text
+            or "quota" in text
+            or "rate limit" in text
+            or "rate_limit" in text
+            or "resource_exhausted" in text
+        )
 
     # ── Prompt building ─────────────────────────────────────
 
@@ -311,6 +439,7 @@ class VisionAI:
         parts.append(
             "\nAnalyze the screenshot above and decide the SINGLE next action to take."
             "\nThe user's task is inside <user_task> tags above. Follow ONLY that task."
+            "\nIf the user writes in Bengali or Hindi, reason and summarize naturally in that language."
             "\nRespond with your THOUGHT and then the action JSON."
         )
         return "\n".join(parts)

@@ -13,9 +13,9 @@ class ActionVerifier:
         if not result.get("success"):
             return {"success": False, "error": result.get("error", "Action failed")}
         action_type = action.get("action", "")
-        if action_type in {"uia_click", "ocr_click", "click", "double_click"}:
+        if action_type in {"uia_click", "ocr_click", "click", "double_click", "smart_click"}:
             return self._verify_window_still_valid(expected_window)
-        if action_type in {"uia_type", "ocr_type", "type_text", "type_unicode"}:
+        if action_type in {"uia_type", "ocr_type", "type_text", "type_unicode", "smart_type"}:
             focused = self._focused_text()
             if focused:
                 return {"success": True, "verified": "focused_text_readable", "focused_text": focused[:120]}
@@ -29,7 +29,7 @@ class ActionVerifier:
             return {"success": True, "verified": "no_expected_window"}
         try:
             current = self.uia.get_active_window_info()
-            expected_pid = getattr(expected_window, "process_id", None)
+            expected_pid = expected_window.get("process_id") if isinstance(expected_window, dict) else getattr(expected_window, "process_id", None)
             if expected_pid and current.get("process_id") and expected_pid != current.get("process_id"):
                 return {
                     "success": False,
