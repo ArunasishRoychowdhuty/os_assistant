@@ -16,6 +16,17 @@
 
 With the latest major upgrades, OS Assistant now features a **Blazing-Fast C++ Native Engine**, advanced **Live Perception Modules**, **Action Verification**, and an entire **Algorithmic Trading Lab**.
 
+## 💻 Tech Stack
+
+<div align="center">
+  <img src="https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python">
+  <img src="https://img.shields.io/badge/C++-00599C?style=for-the-badge&logo=c%2B%2B&logoColor=white" alt="C++">
+  <img src="https://img.shields.io/badge/Rust-000000?style=for-the-badge&logo=rust&logoColor=white" alt="Rust">
+  <img src="https://img.shields.io/badge/PyQt6-41CD52?style=for-the-badge&logo=qt&logoColor=white" alt="PyQt6">
+  <img src="https://img.shields.io/badge/PowerShell-5391FE?style=for-the-badge&logo=powershell&logoColor=white" alt="PowerShell">
+  <img src="https://img.shields.io/badge/OpenAI-412991?style=for-the-badge&logo=openai&logoColor=white" alt="OpenAI">
+</div>
+
 ## ✨ What's New in the Latest Major Upgrade?
 
 - **🧠 Event-Driven Orchestrator Spine:** Transitioned from a monolithic loop to a fully decoupled `Observer -> Planner -> Executor -> Learner` architecture using queues for zero-latency streaming execution.
