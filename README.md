@@ -18,14 +18,12 @@ With the latest major upgrades, OS Assistant now features a **Blazing-Fast C++ N
 
 ## ✨ What's New in the Latest Major Upgrade?
 
-- **⚡ C++ Native Engine (`native_engine/`):** We've introduced a high-performance C++ backend for CPU-intensive tasks, reducing latency for OS interactions.
-- **👁️ Live & Fast Perception (`live_perception.py`, `fast_perception.py`):** Real-time screen analysis, DOM monitoring, and `screen_diff.py` allow the agent to detect dynamic UI changes instantly.
-- **🎯 GUI Reliability & Action Verification:** Ensures that clicks and typing actions are verified. The agent double-checks the screen state before and after actions to ensure execution success.
-- **📈 Fully-Featured Trading Lab (`trading_lab/`):** A robust automated trading framework integrated right into the project! Features include:
-  - Broker Integrations & Paper Trading
-  - Advanced Risk Management & Order Gating
-  - Strategy Execution Models
-- **🧪 Automated Testing Harness:** Comprehensive `pytest` infrastructure for ensuring agent reliability, memory recovery, and GUI tools.
+- **🧠 Event-Driven Orchestrator Spine:** Transitioned from a monolithic loop to a fully decoupled `Observer -> Planner -> Executor -> Learner` architecture using queues for zero-latency streaming execution.
+- **⚡ Execution Adapters (Terminal-First Architecture):** Replaced legacy PyAutoGUI actions with modular adapters (`InputAdapter`, `SystemAdapter`). The system now launches applications instantly via PowerShell instead of slow GUI clicking.
+- **🎮 Game-Ready DirectInput:** Upgraded keyboard and mouse interactions to use `pydirectinput`, allowing the AI to play and interact with DirectX/OpenGL games (e.g., Free Fire, Valorant) flawlessly.
+- **🗣️ Wake Word & TTS Engine:** The assistant now listens for "Hey Jarvis" natively via `openwakeword` and speaks its actions out loud using a threaded `pyttsx3` engine.
+- **🛡️ Adaptive Resource Manager (ARM):** Intelligently throttles background screen monitoring when heavy apps or games are detected, saving CPU and RAM automatically.
+- **📈 Fully-Featured Trading Lab (`trading_lab/`):** A robust automated trading framework integrated right into the project with Broker Integrations, Paper Trading, and Risk Management.
 
 ## ✨ Core Features
 
@@ -84,7 +82,7 @@ Open `.env` and securely add your API keys.
 
 Fine-tune the assistant by editing `os_assistant/config.py` or your `.env` file:
 
-- `AI_PROVIDER`: Set your preferred brain (`openai`, `anthropic`, or `gemini`).
+- `AI_PROVIDER`: Set your preferred brain (`nvidia`, `openai`, `anthropic`, or `gemini`).
 - `CONFIRM_DESTRUCTIVE`: Toggle human-in-the-loop safety confirmations `True`/`False`.
 - `MAX_RETRIES`: Adjust the agent's persistence on failed tasks.
 
