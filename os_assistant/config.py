@@ -17,11 +17,12 @@ class Config:
     # Supported: "openai", "anthropic", "gemini", "nvidia"
     AI_PROVIDER = os.getenv("AI_PROVIDER", "nvidia")
 
-    # API Keys (set via .env file or environment variables)
+    # API Keys must be supplied through environment variables or a local .env file.
+    # Never commit provider credentials or use hardcoded fallback values.
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
     ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-    NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY", "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")
+    NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY", "")
     NVIDIA_BASE_URL = os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
 
     # Model names per provider
